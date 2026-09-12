@@ -9,6 +9,9 @@
     background: #0b0d10; color: #d6dbe4;
     font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
   }
+  body.embed header, body.embed aside { display: none; }
+  body.embed main { display: block; }
+  body.embed #stage { width: 100%; height: 100vh; }
   header { padding: 14px 18px 10px; border-bottom: 1px solid #1c2028; }
   h1 { margin: 0; font-size: 14px; letter-spacing: .06em; font-weight: 600; }
   #status { color: #6f7889; margin-top: 3px; }
@@ -174,6 +177,8 @@ function matMul(A, B) {
       out[i][j] = A[i][0]*B[0][j] + A[i][1]*B[1][j] + A[i][2]*B[2][j];
   return out;
 }
+
+if (location.hash === "#embed") document.body.classList.add("embed");
 
 const cv = document.getElementById("c"), ctx = cv.getContext("2d");
 let W = 0, H = 0;
