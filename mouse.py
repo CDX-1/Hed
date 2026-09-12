@@ -7,9 +7,10 @@ So the head works like a d-pad around wherever it was pointing at startup -
 look a little left and the cursor walks left until you come back to centre.
 
 Clicks come off roll, the one axis the cursor does not use: tip your head over
-towards a shoulder and back. Right shoulder is a left click, left shoulder is a
-right click. Each tilt fires exactly once however long you hold it, and the
-cursor freezes for the duration, so the gesture cannot drag the pointer off
+towards a shoulder. Right shoulder is a left click, left shoulder is a right
+click. The button goes down as you cross the threshold and stays down for as
+long as you hold the tilt - a tap is a click, a held lean is a press-and-hold.
+The cursor freezes for the duration, so the gesture cannot drag the pointer off
 whatever you were aiming at.
 
 Movement runs on its own clock rather than on the sensor's, so the speed stays
@@ -56,9 +57,6 @@ BUTTONS = {
     "left": (_KCG_EVENT_LEFT_DOWN, _KCG_EVENT_LEFT_UP, _KCG_MOUSE_BUTTON_LEFT),
     "right": (_KCG_EVENT_RIGHT_DOWN, _KCG_EVENT_RIGHT_UP, _KCG_MOUSE_BUTTON_RIGHT),
 }
-CLICK_HOLD = 0.02          # seconds the button stays down
-
-
 class MouseError(Exception):
     pass
 
@@ -117,10 +115,11 @@ class Cursor:
         self.buttons = ("right", "left") if swap_clicks else ("left", "right")
         self.origin = None          # (yaw, pitch, roll) angles are measured from
         self._dir = (0.0, 0.0)      # -1, 0 or +1 per axis
-        self._armed = True          # a tilt only fires on the way past, once
-        self._last_click = ""
+        self._armed = True          # press only on the way past the threshold
+        self._held = None           # button name while the head is still over
         self._last_aim = None
-        self._clicks = collections.deque()
+        # ("down"|"up", button) - posted on the mover thread, not from aim()
+        self._button_events = collections.deque()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -182,22 +181,26 @@ class Cursor:
         return 1.0 - math.exp(-dt / tau)
 
     def _click_gesture(self, angle):
-        """Edge-trigger a click on the way out past the threshold.
+        """Press on the way out past the threshold; release on the way back.
 
-        One tilt, one click, no matter how long it is held - and nothing fires
-        again until the head comes back inside the release angle. That gap is
-        what stops a head resting near the threshold from machine-gunning
-        clicks as it wobbles across it.
+        The button stays down for as long as the head is over - a quick tip is
+        still a click, a held lean is a press-and-hold. Nothing presses again
+        until the head comes back inside the release angle. That gap is what
+        stops a head resting near the threshold from machine-gunning clicks as
+        it wobbles across it.
         """
         if self._armed:
             if abs(angle) < self.click_angle:
                 return
             # +roll is a tilt towards the right shoulder.
             button = self.buttons[0] if angle > 0 else self.buttons[1]
-            self._clicks.append(button)
-            self._last_click = button
+            self._button_events.append(("down", button))
+            self._held = button
             self._armed = False
         elif abs(angle) < self.release_angle:
+            if self._held is not None:
+                self._button_events.append(("up", self._held))
+                self._held = None
             self._armed = True
 
     @property
@@ -205,8 +208,8 @@ class Cursor:
         """Short description of the click gesture, for the dashboard."""
         if self.click_angle <= 0:
             return "clicks off"
-        if not self._armed:
-            return f"{self._last_click} click"
+        if self._held is not None:
+            return f"holding {self._held}"
         return "ready"
 
     def zero(self):
@@ -229,6 +232,9 @@ class Cursor:
 
     def stop(self):
         self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
 
     def _location(self):
         ev = self.cg.CGEventCreate(None)
@@ -242,46 +248,58 @@ class Cursor:
         self.cg.CGEventPost(_KCG_HID_EVENT_TAP, ev)
         self.cf.CFRelease(ev)
 
-    def _click(self, button):
-        """Press and release, where the cursor is now."""
+    def _post_button(self, kind, button):
+        """Press or release, where the cursor is now."""
         down, up, number = BUTTONS[button]
+        event_type = down if kind == "down" else up
         x, y = self._location()
-        for kind in (down, up):
-            ev = self.cg.CGEventCreateMouseEvent(
-                None, kind, _CGPoint(x, y), number)
-            self.cg.CGEventSetIntegerValueField(
-                ev, _KCG_MOUSE_EVENT_CLICK_STATE, 1)
-            self.cg.CGEventPost(_KCG_HID_EVENT_TAP, ev)
-            self.cf.CFRelease(ev)
-            if kind is down:
-                time.sleep(CLICK_HOLD)
+        ev = self.cg.CGEventCreateMouseEvent(
+            None, event_type, _CGPoint(x, y), number)
+        self.cg.CGEventSetIntegerValueField(
+            ev, _KCG_MOUSE_EVENT_CLICK_STATE, 1)
+        self.cg.CGEventPost(_KCG_HID_EVENT_TAP, ev)
+        self.cf.CFRelease(ev)
+
+    def _flush_buttons(self):
+        """Post queued presses/releases; drop any held button on the way out."""
+        if self._held is not None:
+            self._button_events.append(("up", self._held))
+            self._held = None
+        while self._button_events:
+            kind, button = self._button_events.popleft()
+            self._post_button(kind, button)
 
     def _run(self):
         last = time.monotonic()
         carry_x = carry_y = 0.0
-        while not self._stop.is_set():
-            time.sleep(TICK)
-            now = time.monotonic()
-            dt = min(now - last, 0.1)     # a stalled thread should not teleport
-            last = now
-            # Clicks are posted from here rather than from aim(), so the button
-            # hold does not stall the thread reading the serial port.
-            while self._clicks:
-                self._click(self._clicks.popleft())
-            dx_dir, dy_dir = self.direction
-            if dx_dir == 0.0 and dy_dir == 0.0:
-                carry_x = carry_y = 0.0
-                continue
-            # Read the live position every tick instead of tracking our own:
-            # the screen edges clamp it for us, and the trackpad still works
-            # while the head is steering.
-            x, y = self._location()
-            carry_x += dx_dir * self.speed * dt
-            carry_y += dy_dir * self.speed * dt
-            step_x, carry_x = _split(carry_x)
-            step_y, carry_y = _split(carry_y)
-            if step_x or step_y:
-                self._move_to(x + step_x, y + step_y)
+        try:
+            while not self._stop.is_set():
+                time.sleep(TICK)
+                now = time.monotonic()
+                dt = min(now - last, 0.1)     # a stalled thread should not teleport
+                last = now
+                # Button events are posted from here rather than from aim(), so a
+                # stuck Accessibility call cannot stall the serial reader.
+                while self._button_events:
+                    kind, button = self._button_events.popleft()
+                    self._post_button(kind, button)
+                dx_dir, dy_dir = self.direction
+                if dx_dir == 0.0 and dy_dir == 0.0:
+                    carry_x = carry_y = 0.0
+                    continue
+                # Read the live position every tick instead of tracking our own:
+                # the screen edges clamp it for us, and the trackpad still works
+                # while the head is steering.
+                x, y = self._location()
+                carry_x += dx_dir * self.speed * dt
+                carry_y += dy_dir * self.speed * dt
+                step_x, carry_x = _split(carry_x)
+                step_y, carry_y = _split(carry_y)
+                if step_x or step_y:
+                    self._move_to(x + step_x, y + step_y)
+        finally:
+            # Do not leave a button stuck down if we quit mid-tilt.
+            self._flush_buttons()
 
 
 def _wrap(deg):

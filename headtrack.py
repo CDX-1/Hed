@@ -448,8 +448,9 @@ def main():
                     help="how fast centre follows your resting head, to soak up "
                          "yaw drift; 0 pins it (default 2)")
     ap.add_argument("--mouse-click-angle", type=float, default=20.0, metavar="DEG",
-                    help="head tilt that fires a click - right shoulder left-clicks, "
-                         "left shoulder right-clicks; 0 turns clicking off "
+                    help="head tilt that presses a button (held until you "
+                         "straighten) - right shoulder left-clicks, left "
+                         "shoulder right-clicks; 0 turns clicking off "
                          "(default 20)")
     ap.add_argument("--mouse-swap-clicks", action="store_true",
                     help="tilt left to left-click and right to right-click instead")
@@ -502,8 +503,9 @@ def main():
                   f"{args.mouse_deadzone:.0f} deg off centre")
             if args.mouse_click_angle > 0:
                 lo, hi = cursor.buttons
-                print(f"  tilt {args.mouse_click_angle:.0f} deg to click - "
-                      f"right shoulder {lo}-clicks, left shoulder {hi}-clicks")
+                print(f"  tilt {args.mouse_click_angle:.0f} deg to press "
+                      f"(hold while tilted) - right shoulder {lo}-clicks, "
+                      f"left shoulder {hi}-clicks")
 
     if args.airpods:
         note = "angles are relative to where your head pointed at startup"

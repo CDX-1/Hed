@@ -187,7 +187,7 @@ edges without watching the cursor.
 
 ### Clicking
 
-Tip your head over towards a shoulder and back:
+Tip your head over towards a shoulder:
 
 | gesture | button |
 |---|---|
@@ -195,11 +195,11 @@ Tip your head over towards a shoulder and back:
 | tilt towards the **left** shoulder | **right** click |
 
 Roll is the one axis the cursor does not use, which is what makes it free for
-this. The threshold is 20 degrees - deliberate, but an easy movement - and it is
-edge-triggered: one tilt is one click however long you hold it, and nothing
-fires again until your head comes back within 10 degrees of upright. That gap is
-what stops a head resting near the threshold from machine-gunning clicks as it
-wobbles across it.
+this. The threshold is 20 degrees - deliberate, but an easy movement - and the
+button goes **down** as you cross it and stays down until your head comes back
+within 10 degrees of upright. A quick tip is still a click; keep the lean and
+it is a press-and-hold. That gap is what stops a head resting near the
+threshold from machine-gunning clicks as it wobbles across it.
 
 The cursor freezes while your head is over, because head tilt bleeds a little
 into yaw and pitch and a click that slides the pointer off its target is a miss.
@@ -292,6 +292,19 @@ CoreMotion silently stops delivering.
 If you ever deny the motion prompt, re-allow it in
 **System Settings > Privacy & Security > Motion & Fitness**.
 
+## The Chrome extension
+
+`chrome_extension/` is a standalone browser accessibility helper. Load it
+unpacked from `chrome://extensions`: focusing any text field pops up a mic
+dot beside it and dictates into the field using `SpeechRecognition`.
+**Ctrl/⌘+Shift+M** toggles listening, **Esc** stops.
+
+It does **not** need the Arduino board, `headtrack.py`, the Python venv, or
+`HeadTrack.app`. It never opens a socket to the tracker and never imports
+anything else in this repo - use it on its own with nothing else running.
+
+See `chrome_extension/README.md` for install and options.
+
 ## Files
 
 - `headtrack.py` - dashboard, CSV/JSON output, 3D server, source selection
@@ -302,3 +315,4 @@ If you ever deny the motion prompt, re-allow it in
 - `viz.html` - the 3D head (geometry, rotation, and renderer, ~200 lines of plain JS)
 - `run.sh` - sets up the venv and launches the tracker
 - `build_app.sh` - builds the `HeadTrack.app` wrapper, only needed for `--airpods`
+- `chrome_extension/` - MV3 extension: voice-to-text on the focused field, hotkey toggle
