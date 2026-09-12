@@ -436,7 +436,7 @@ def main():
     ap.add_argument("--no-open", action="store_true",
                     help="with --3d, do not launch a browser")
     ap.add_argument("--mouse", action="store_true",
-                    help="move the mouse cursor with your head (macOS)")
+                    help="move the mouse cursor with your head (macOS/Windows)")
     ap.add_argument("--mouse-speed", type=float, default=350.0, metavar="PXS",
                     help="cursor speed in pixels per second (default 350)")
     ap.add_argument("--mouse-deadzone", type=float, default=6.0, metavar="DEG",

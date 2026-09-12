@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Steer the macOS cursor from head orientation.
+"""Steer the desktop cursor from head orientation.
 
 Direction only, never distance: once yaw (or pitch) passes the deadzone the
 cursor slides at one fixed speed, and looking further does not make it faster.
@@ -25,18 +25,18 @@ are outside it, purely as a backstop for drift wider than the deadzone. Both
 are far slower than a deliberate glance, so steering is unaffected; what gets
 absorbed is the creep.
 
-Posting cursor events needs Accessibility permission for whatever launched us
-(Terminal, iTerm, ...): System Settings > Privacy & Security > Accessibility.
-Without it the events are swallowed silently - nothing errors, the cursor just
-never moves - so we check up front and say so.
+On macOS, posting cursor events needs Accessibility permission for whatever
+launched us (Terminal, iTerm, ...). Windows uses the user32 input API directly.
 """
 
 import collections
 import ctypes
 import ctypes.util
 import math
+import os
 import threading
 import time
+from ctypes import wintypes
 
 TICK = 1 / 120.0        # cursor updates per second; smooth without busy-spinning
 
@@ -51,6 +51,11 @@ _KCG_MOUSE_BUTTON_RIGHT = 1
 # Without a click count an app sees a press with no click, and plenty of them
 # (Finder, most menus) just ignore it.
 _KCG_MOUSE_EVENT_CLICK_STATE = 1
+
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+_MOUSEEVENTF_RIGHTDOWN = 0x0008
+_MOUSEEVENTF_RIGHTUP = 0x0010
 
 # Buttons, as (down event, up event, button number).
 BUTTONS = {
@@ -94,6 +99,19 @@ def _load():
     return cg, cf
 
 
+def _load_windows():
+    """Bind the Windows cursor and button calls used by --mouse."""
+    user32 = ctypes.windll.user32
+    user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    user32.GetCursorPos.restype = wintypes.BOOL
+    user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    user32.SetCursorPos.restype = wintypes.BOOL
+    user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.DWORD, wintypes.DWORD, ctypes.c_ulong]
+    user32.mouse_event.restype = None
+    return user32
+
+
 class Cursor:
     """The cursor, moved at a velocity someone else keeps setting."""
 
@@ -104,7 +122,13 @@ class Cursor:
 
     def __init__(self, speed=350.0, deadzone=6.0, invert_y=False, recenter=2.0,
                  click_angle=20.0, swap_clicks=False):
-        self.cg, self.cf = _load()
+        self.windows = os.name == "nt"
+        if self.windows:
+            self.user32 = _load_windows()
+            self.cg = self.cf = None
+        else:
+            self.cg, self.cf = _load()
+            self.user32 = None
         self.speed = speed
         self.deadzone = deadzone
         self.invert_y = invert_y
@@ -224,6 +248,8 @@ class Cursor:
     # -- the mover --------------------------------------------------------
 
     def trusted(self):
+        if self.windows:
+            return True
         return bool(self.cg.AXIsProcessTrusted())
 
     def start(self):
@@ -237,12 +263,21 @@ class Cursor:
             self._thread = None
 
     def _location(self):
+        if self.windows:
+            point = wintypes.POINT()
+            if not self.user32.GetCursorPos(ctypes.byref(point)):
+                raise MouseError("Windows could not read the cursor position")
+            return point.x, point.y
         ev = self.cg.CGEventCreate(None)
         p = self.cg.CGEventGetLocation(ev)
         self.cf.CFRelease(ev)
         return p.x, p.y
 
     def _move_to(self, x, y):
+        if self.windows:
+            if not self.user32.SetCursorPos(round(x), round(y)):
+                raise MouseError("Windows could not move the cursor")
+            return
         ev = self.cg.CGEventCreateMouseEvent(
             None, _KCG_EVENT_MOUSE_MOVED, _CGPoint(x, y), _KCG_MOUSE_BUTTON_LEFT)
         self.cg.CGEventPost(_KCG_HID_EVENT_TAP, ev)
@@ -251,6 +286,15 @@ class Cursor:
     def _post_button(self, kind, button):
         """Press or release, where the cursor is now."""
         down, up, number = BUTTONS[button]
+        if self.windows:
+            flags = {
+                ("down", "left"): _MOUSEEVENTF_LEFTDOWN,
+                ("up", "left"): _MOUSEEVENTF_LEFTUP,
+                ("down", "right"): _MOUSEEVENTF_RIGHTDOWN,
+                ("up", "right"): _MOUSEEVENTF_RIGHTUP,
+            }[(kind, button)]
+            self.user32.mouse_event(flags, 0, 0, 0, 0)
+            return
         event_type = down if kind == "down" else up
         x, y = self._location()
         ev = self.cg.CGEventCreateMouseEvent(

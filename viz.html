@@ -92,18 +92,10 @@
   }
   .mode-keyboard { color: #aeb5c4; }
   .mode-mic { color: #f0f2f5; }
-  #cube-popover {
-    position: absolute; top: 61px; left: 50%; width: 270px; height: 214px;
-    overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 18px;
-    background: #0b0d10; box-shadow: 0 18px 44px rgba(0,0,0,.62);
-    opacity: 0; transform: translate(-50%, -8px) scale(.94); pointer-events: none;
-    transition: opacity .2s ease, transform .25s cubic-bezier(.2,.9,.2,1);
-  }
-  #island-wrap:has(#head:hover) #cube-popover, #cube-popover.show {
-    opacity: 1; transform: translate(-50%, 0) scale(1); pointer-events: auto;
-  }
-  #cube-popover iframe { display: block; width: 100%; height: 100%; border: 0; }
-  @media (prefers-reduced-motion: reduce) { #island, .island-controls, #cube-popover, .island-btn { transition: none; } }
+  #mode[aria-pressed="true"] .mode-thumb { left: 14px; }
+  #mode[aria-pressed="true"] .mode-keyboard { color: #f0f2f5; }
+  #mode[aria-pressed="true"] .mode-mic { color: #aeb5c4; }
+  @media (prefers-reduced-motion: reduce) { #island, .island-controls, .island-btn { transition: none; } }
 </style>
 
 <header>
@@ -125,21 +117,18 @@
   <div id="island">
     <span class="island-hint" aria-hidden="true"></span>
     <div class="island-controls">
-      <button class="island-btn" id="mode" type="button" aria-label="Microphone and keyboard input toggle" title="Input toggle (coming soon)">
+      <button class="island-btn" id="mode" type="button" aria-label="Microphone and keyboard input toggle" aria-pressed="false" title="Toggle microphone or keyboard input">
         <svg class="mode-mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8"/></svg>
         <span class="mode-track" aria-hidden="true"><span class="mode-thumb"></span></span>
         <svg class="mode-keyboard" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M7 14h6M16 14h1"/></svg>
       </button>
-      <button class="island-btn" id="head" type="button" aria-label="Show cube preview" aria-expanded="false" title="Show cube preview">
+      <button class="island-btn" id="head" type="button" aria-label="Head tracking" title="Head tracking">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 21c.8-4 3.2-6 7.5-6s6.7 2 7.5 6"/></svg>
       </button>
-      <button class="island-btn" id="x-button" type="button" aria-label="Close" title="Close (coming soon)">
+      <button class="island-btn" id="x-button" type="button" aria-label="Close" title="Close">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
       </button>
     </div>
-  </div>
-  <div id="cube-popover" role="dialog" aria-label="Live cube preview">
-    <iframe src="/cube#embed" title="Live cube preview"></iframe>
   </div>
 </nav>
 
@@ -320,8 +309,7 @@ let latest = null, samples = 0, lastAt = 0, hz = 0;
 
 const status = document.getElementById("status"), hud = document.getElementById("hud");
 const island = document.getElementById("island");
-const headButton = document.getElementById("head");
-const cubePopover = document.getElementById("cube-popover");
+const modeButton = document.getElementById("mode");
 const inv = { yaw: document.getElementById("iyaw"),
               pitch: document.getElementById("ipitch"),
               roll: document.getElementById("iroll") };
@@ -330,14 +318,9 @@ function recenter() { if (latest) zero = { yaw: latest.yaw, pitch: latest.pitch,
 document.getElementById("recenter").onclick = recenter;
 addEventListener("keydown", e => { if (e.key === "r") recenter(); });
 
-// The island controls are intentionally inert for now. The head button is the
-// one exception: it only reveals the live cube preview and does not alter the
-// tracker or any input mode.
-headButton.onclick = () => {
-  const open = cubePopover.classList.toggle("show");
-  headButton.classList.toggle("active", open);
-  headButton.setAttribute("aria-expanded", String(open));
-  island.classList.toggle("open", open);
+modeButton.onclick = () => {
+  const enabled = modeButton.getAttribute("aria-pressed") !== "true";
+  modeButton.setAttribute("aria-pressed", String(enabled));
 };
 
 const es = new EventSource("/stream");
