@@ -46,4 +46,7 @@ for _ in $(seq 20); do
     sleep 0.1
 done
 
+# LaunchServices can take several seconds to bring the bundle up the first time,
+# and the FIFO stays silent until it does.
+echo "  starting HeadTrack.app ..."
 cat "$FIFO"

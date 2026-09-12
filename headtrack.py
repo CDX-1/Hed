@@ -21,7 +21,10 @@ import math
 import os
 import signal
 import sys
+import threading
 import time
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # The app bundle launches us through LaunchServices, which does not inherit the
 # shell's environment - so find the virtualenv ourselves instead of leaning on
@@ -32,10 +35,20 @@ for _sp in glob.glob(os.path.join(_HERE, ".venv/lib/python3.*/site-packages")):
         sys.path.insert(0, _sp)
 
 import CoreMotion
-from Foundation import NSBundle, NSObject, NSOperationQueue, NSRunLoop, NSDate
+from Foundation import (NSBundle, NSObject, NSOperationQueue, NSProcessInfo,
+                        NSRunLoop, NSDate)
 import objc
 
 AUTH = {0: "not determined", 1: "restricted", 2: "denied", 3: "authorized"}
+
+# Yaw from the public API has no absolute reference, so it is measured from
+# whatever direction you faced at startup and drifts from there. A private
+# entry point accepts a CMAttitudeReferenceFrame; magnetic north pins yaw to a
+# real-world direction and the drift goes away. It is private, so every use is
+# guarded and falls back to the public call.
+NORTH_SEL = ("startDeviceMotionUpdatesPrivateUsingReferenceFrame:"
+             "bodyFrame:toQueue:withHandler:")
+REF_MAGNETIC_NORTH = 4          # CMAttitudeReferenceFrameXMagneticNorthZVertical
 SENSOR = {0: "default", 1: "left earbud", 2: "right earbud"}
 
 DEG = 180.0 / math.pi
@@ -62,6 +75,25 @@ class Sample:
         self.grav = (g.x, g.y, g.z)
         loc = dm.sensorLocation() if dm.respondsToSelector_("sensorLocation") else 0
         self.where = SENSOR.get(loc, str(loc))
+
+    @classmethod
+    def synthetic(cls, t):
+        """A canned head-turn, for checking the plumbing without AirPods in."""
+        s = cls.__new__(cls)
+        s.t = t
+        s.yaw = 65 * math.sin(t * 0.9)
+        s.pitch = 22 * math.sin(t * 0.6 + 1)
+        s.roll = 16 * math.sin(t * 1.3 + 2)
+        cy, sy = math.cos(s.yaw * 0.5 / DEG), math.sin(s.yaw * 0.5 / DEG)
+        cp, sp = math.cos(s.pitch * 0.5 / DEG), math.sin(s.pitch * 0.5 / DEG)
+        cr, sr = math.cos(s.roll * 0.5 / DEG), math.sin(s.roll * 0.5 / DEG)
+        s.quat = (cr*cp*cy + sr*sp*sy, sr*cp*cy - cr*sp*sy,
+                  cr*sp*cy + sr*cp*sy, cr*cp*sy - sr*sp*cy)
+        s.rot = (0.0, 0.0, 0.0)
+        s.acc = (0.0, 0.0, 0.0)
+        s.grav = (0.0, -1.0, 0.0)
+        s.where = "demo"
+        return s
 
     def as_dict(self):
         return {
@@ -110,6 +142,8 @@ class Dashboard:
         self.t0 = time.monotonic()
         self.last_draw = 0.0
 
+    north = False
+
     def update(self, s):
         self.count += 1
         now = time.monotonic()
@@ -134,7 +168,9 @@ class Dashboard:
             "  gravity         x {:+.4f}  y {:+.4f}  z {:+.4f}   g".format(*s.grav),
             "",
             "  yaw = turn left/right   pitch = nod   roll = tilt",
-            "  angles are relative to where your head pointed at startup",
+            ("  yaw 0 = magnetic north; pitch and roll are relative to level"
+             if self.north else
+             "  angles are relative to where your head pointed at startup"),
             "  ctrl-c to stop",
         ]
         if self.started:
@@ -142,6 +178,75 @@ class Dashboard:
         self.started = True
         sys.stdout.write("".join(f"\033[2K{line}\n" for line in out))
         sys.stdout.flush()
+
+
+def serve(port, latest):
+    """Serve viz.html and push each sample to it over server-sent events."""
+    page = open(os.path.join(_HERE, "viz.html"), "rb").read()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path.startswith("/stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                sent = -1
+                try:
+                    while True:
+                        s = latest.get("sample")
+                        n = latest.get("n", 0)
+                        payload = s.as_dict() if s else {"waiting": True}
+                        if s is None or n != sent:
+                            self.wfile.write(
+                                b"data: " + json.dumps(payload).encode() + b"\n\n")
+                            self.wfile.flush()
+                            sent = n
+                        time.sleep(1 / 60)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                return
+
+            if self.path in ("/", "/index.html"):
+                body, ctype = page, "text/html; charset=utf-8"
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    class Server(ThreadingHTTPServer):
+        def handle_error(self, request, client_address):
+            # A browser closing a tab resets the stream socket; that is normal
+            # here and should not spray a traceback over the dashboard.
+            if not isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError)):
+                super().handle_error(request, client_address)
+
+    srv = Server(("127.0.0.1", port), Handler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def start_updates(mgr, queue, handler, north):
+    """Begin motion updates. Returns True if the north-referenced path was taken."""
+    if north and mgr.respondsToSelector_(NORTH_SEL):
+        try:
+            mgr.startDeviceMotionUpdatesPrivateUsingReferenceFrame_bodyFrame_toQueue_withHandler_(
+                REF_MAGNETIC_NORTH, mgr.deviceMotionBodyFrame(), queue, handler)
+            return True
+        except Exception:
+            pass
+    mgr.startDeviceMotionUpdatesToQueue_withHandler_(queue, handler)
+    return False
 
 
 class Delegate(NSObject):
@@ -169,8 +274,17 @@ def main():
     ap.add_argument("--json", action="store_true",
                     help="print one JSON object per sample instead of the dashboard")
     ap.add_argument("--csv", metavar="FILE", help="also record every sample to FILE")
+    ap.add_argument("--3d", "--serve", dest="serve", nargs="?", type=int,
+                    const=8765, metavar="PORT",
+                    help="open a live 3D head in the browser (default port 8765)")
     ap.add_argument("--duration", type=float, metavar="SEC",
                     help="stop automatically after SEC seconds")
+    ap.add_argument("--relative", action="store_true",
+                    help="measure yaw from your startup pose instead of magnetic north")
+    ap.add_argument("--no-open", action="store_true",
+                    help="with --3d, do not launch a browser")
+    ap.add_argument("--demo", action="store_true",
+                    help="feed fake motion instead of the AirPods, to test the setup")
     ap.add_argument("--cwd", metavar="DIR", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
@@ -179,11 +293,20 @@ def main():
     if args.cwd:
         os.chdir(args.cwd)
 
-    if NSBundle.mainBundle().objectForInfoDictionaryKey_("NSMotionUsageDescription") is None:
+    if not args.demo and NSBundle.mainBundle().objectForInfoDictionaryKey_(
+            "NSMotionUsageDescription") is None:
         sys.exit("  Run this through ./run.sh .\n"
                  "  macOS kills any process that asks for motion data without an app bundle\n"
                  "  declaring NSMotionUsageDescription, so the tracker has to start from\n"
                  "  HeadTrack.app rather than straight from the interpreter.")
+
+    # Without this the sensor stream dies the moment another app takes focus:
+    # a background-only process gets napped, and CoreMotion quietly stops
+    # delivering. The activity token has to stay referenced to keep working.
+    NSActivityUserInitiated = 0x00FFFFFF
+    NSActivityLatencyCritical = 0xFF00000000
+    activity = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+        NSActivityUserInitiated | NSActivityLatencyCritical, "head tracking")
 
     mgr = CoreMotion.CMHeadphoneMotionManager.alloc().init()
     delegate = Delegate.alloc().init()
@@ -193,7 +316,7 @@ def main():
     if not args.json:
         print(f"  motion authorization: {AUTH.get(status, status)}")
 
-    if not mgr.isDeviceMotionAvailable():
+    if not args.demo and not mgr.isDeviceMotionAvailable():
         sys.exit("  no head-tracking-capable headphones. Connect AirPods (Pro/Max/3rd gen)\n"
                  "  and make sure they are the active audio output, then try again.")
 
@@ -205,16 +328,21 @@ def main():
         writer.writerow(CSV_HEADER)
 
     dash = None if args.json else Dashboard()
-    state = {"fatal": None, "rows": 0}
+    state = {"fatal": None, "rows": 0, "n": 0}
+    latest = {"sample": None, "n": 0}
 
-    def handler(dm, err):
-        if err is not None:
-            state["fatal"] = explain_error(err)
-            mgr.stopDeviceMotionUpdates()
-            return
-        if dm is None:
-            return
-        s = Sample(dm)
+    if args.serve:
+        serve(args.serve, latest)
+        url = f"http://127.0.0.1:{args.serve}/"
+        print(f"  3D view: {url}")
+        if not args.no_open:
+            webbrowser.open(url)
+
+    def emit(s):
+        state["n"] += 1
+        if args.serve:
+            latest["sample"] = s
+            latest["n"] += 1
         if writer:
             writer.writerow(s.as_row())
             state["rows"] += 1
@@ -225,24 +353,58 @@ def main():
         else:
             dash.update(s)
 
-    mgr.startDeviceMotionUpdatesToQueue_withHandler_(
-        NSOperationQueue.mainQueue(), handler)
+    def handler(dm, err):
+        if err is not None:
+            state["fatal"] = explain_error(err)
+            mgr.stopDeviceMotionUpdates()
+            return
+        if dm is not None:
+            emit(Sample(dm))
+
+    if args.demo:
+        def fake():
+            t0 = time.monotonic()
+            while state["fatal"] is None:
+                emit(Sample.synthetic(time.monotonic() - t0))
+                time.sleep(0.04)
+        threading.Thread(target=fake, daemon=True).start()
+    else:
+        north = start_updates(mgr, NSOperationQueue.mainQueue(), handler,
+                              not args.relative)
+        state["north"] = north
+        if dash:
+            dash.north = north
+        if not args.json:
+            print("  yaw reference: "
+                  + ("magnetic north" if north else "your startup pose"))
 
     if not args.json:
-        print("  waiting for motion data... move your head\n")
+        print("  waiting for motion data... move your head\n" if not args.demo
+              else "  demo mode - synthetic motion\n")
 
     signal.signal(signal.SIGINT, signal.default_int_handler)
     loop = NSRunLoop.currentRunLoop()
     deadline = time.monotonic() + args.duration if args.duration else None
+    started = time.monotonic()
     try:
         while state["fatal"] is None:
             loop.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.05))
+            if (state.get("north") and state["n"] == 0
+                    and time.monotonic() - started > 3.0):
+                # accepted the private call but delivered nothing - drop back
+                state["north"] = False
+                mgr.stopDeviceMotionUpdates()
+                start_updates(mgr, NSOperationQueue.mainQueue(), handler, False)
+                if not args.json:
+                    print("  (north reference gave no data - "
+                          "using your startup pose instead)")
             if deadline and time.monotonic() >= deadline:
                 break
     except KeyboardInterrupt:
         pass
     finally:
-        mgr.stopDeviceMotionUpdates()
+        if not args.demo:
+            mgr.stopDeviceMotionUpdates()
         if csv_file:
             csv_file.close()
             print(f"\n  wrote {args.csv}")

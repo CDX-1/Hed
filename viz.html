@@ -1,0 +1,272 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AirPods head tracking</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: #0e1013; color: #d8dde5;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header { padding: 14px 18px 0; }
+  h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .04em; }
+  #status { color: #7d8698; margin-top: 2px; }
+  #status.live { color: #4ec9a6; }
+  #stage { flex: 1; position: relative; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #hud {
+    position: absolute; left: 18px; bottom: 16px;
+    background: rgba(14,16,19,.72); padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #22262e; white-space: pre; color: #aab3c2;
+  }
+  #hud b { color: #e8edf5; font-weight: 600; }
+  #panel {
+    position: absolute; right: 18px; top: 16px; text-align: right;
+    background: rgba(14,16,19,.72); padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #22262e;
+  }
+  label { display: block; color: #8b94a5; cursor: pointer; user-select: none; }
+  button {
+    margin-top: 8px; font: inherit; color: #d8dde5; cursor: pointer;
+    background: #1b1f26; border: 1px solid #2c323c; border-radius: 5px; padding: 4px 10px;
+  }
+  button:hover { background: #242932; }
+</style>
+
+<header>
+  <h1>AIRPODS HEAD TRACKING</h1>
+  <div id="status">connecting...</div>
+</header>
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="hud"></div>
+  <div id="panel">
+    <label><input type="checkbox" id="iyaw"> invert yaw</label>
+    <label><input type="checkbox" id="ipitch"> invert pitch</label>
+    <label><input type="checkbox" id="iroll"> invert roll</label>
+    <button id="recenter">re-center (r)</button>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------- geometry
+// A mannequin head, built from ellipsoids so there is nothing to load.
+// Vertices flagged `fixed` skip the rotation: the stand stays put while the
+// head turns on it, which is what makes the movement readable.
+const verts = [], faces = [], fixed = [];
+
+function ellipsoid(cx, cy, cz, rx, ry, rz, color, bias = 0, rings = 14, segs = 22) {
+  const base = verts.length;
+  for (let i = 0; i <= rings; i++) {
+    const phi = Math.PI * i / rings;
+    for (let j = 0; j < segs; j++) {
+      const th = 2 * Math.PI * j / segs;
+      verts.push([
+        cx + rx * Math.sin(phi) * Math.cos(th),
+        cy + ry * Math.cos(phi),
+        cz + rz * Math.sin(phi) * Math.sin(th),
+      ]);
+      fixed.push(false);
+    }
+  }
+  const at = (i, j) => base + i * segs + (j % segs);
+  for (let i = 0; i < rings; i++)
+    for (let j = 0; j < segs; j++) {
+      faces.push([at(i, j), at(i + 1, j), at(i + 1, j + 1), color, bias]);
+      faces.push([at(i, j), at(i + 1, j + 1), at(i, j + 1), color, bias]);
+    }
+}
+
+// Same as an ellipsoid, but narrowed toward the jaw and crown so the silhouette
+// reads as a head rather than a ball.
+function headMesh(color, rings = 16, segs = 24) {
+  const base = verts.length;
+  for (let i = 0; i <= rings; i++) {
+    const phi = Math.PI * i / rings;
+    const t = Math.cos(phi);                       // +1 crown, -1 chin
+    const k = 1 - 0.34 * Math.pow(Math.max(0, -t), 1.2)
+                - 0.12 * Math.pow(Math.max(0, t), 2);
+    for (let j = 0; j < segs; j++) {
+      const th = 2 * Math.PI * j / segs;
+      verts.push([0.92 * k * Math.sin(phi) * Math.cos(th),
+                  1.15 * t,
+                  1.02 * k * Math.sin(phi) * Math.sin(th)]);
+      fixed.push(false);
+    }
+  }
+  const at = (i, j) => base + i * segs + (j % segs);
+  for (let i = 0; i < rings; i++)
+    for (let j = 0; j < segs; j++) {
+      faces.push([at(i, j), at(i + 1, j), at(i + 1, j + 1), color, 0]);
+      faces.push([at(i, j), at(i + 1, j + 1), at(i, j + 1), color, 0]);
+    }
+}
+
+// A flat-faceted wedge. A small sphere would show its whole unlit rim once the
+// depth bias lifts it off the face, which reads as a hole rather than a nose.
+function wedge(pts, tris, color, bias) {
+  const base = verts.length;
+  for (const v of pts) { verts.push(v); fixed.push(false); }
+  for (const [a, b, c] of tris) faces.push([base + a, base + b, base + c, color, bias]);
+}
+
+function cone(y0, r0, y1, r1, color, bias, segs = 22) {
+  const base = verts.length;
+  for (const [y, r] of [[y0, r0], [y1, r1]])
+    for (let j = 0; j < segs; j++) {
+      const th = 2 * Math.PI * j / segs;
+      verts.push([r * Math.cos(th), y, r * Math.sin(th)]);
+      fixed.push(true);
+    }
+  for (let j = 0; j < segs; j++) {
+    const a = base + j, b = base + (j + 1) % segs;
+    faces.push([a, b, b + segs, color, bias]);
+    faces.push([a, b + segs, a + segs, color, bias]);
+  }
+}
+
+const SKIN = [208, 202, 194], POD = [246, 247, 250], STAND = [104, 110, 122];
+
+headMesh(SKIN);                                                 // head, +z forward
+wedge([[0, 0.26, 0.94],       // 0 bridge
+       [0, -0.10, 1.13],      // 1 tip
+       [-0.11, -0.22, 0.93],  // 2 base left
+       [0.11, -0.22, 0.93]],  // 3 base right
+      [[0, 2, 1], [0, 1, 3], [1, 2, 3]], SKIN, 0.3);            // nose
+ellipsoid(-0.92, -0.02, 0.0, 0.1, 0.17, 0.13, POD, 0.3, 8, 12); // AirPods
+ellipsoid(0.92, -0.02, 0.0, 0.1, 0.17, 0.13, POD, 0.3, 8, 12);
+ellipsoid(-0.94, -0.3, 0.02, 0.05, 0.17, 0.05, POD, 0.35, 6, 9);// their stems
+ellipsoid(0.94, -0.3, 0.02, 0.05, 0.17, 0.05, POD, 0.35, 6, 9);
+cone(-1.02, 0.3, -1.75, 0.42, STAND, -0.4);                     // neck
+cone(-1.75, 0.42, -1.9, 0.78, STAND, -0.4);                     // base
+
+// ---------------------------------------------------------------- rotation
+// Built from yaw/pitch/roll rather than the raw quaternion: the euler angles
+// carry known meaning (turn / nod / tilt), so the model is guaranteed to move
+// the way the head did, whatever basis CoreMotion reports the quaternion in.
+function matrix(yaw, pitch, roll) {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const cr = Math.cos(roll), sr = Math.sin(roll);
+  return [                                    // Ryaw * Rpitch * Rroll
+    [cy * cr + sy * sp * sr, -cy * sr + sy * sp * cr, sy * cp],
+    [cp * sr,                 cp * cr,               -sp],
+    [-sy * cr + cy * sp * sr, sy * sr + cy * sp * cr, cy * cp],
+  ];
+}
+
+// ---------------------------------------------------------------- rendering
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let W = 0, H = 0;
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener("resize", resize);
+
+const CAM = 4.6, LIGHT = norm([-0.45, 0.7, 0.9]);
+function norm(v) { const l = Math.hypot(...v); return [v[0]/l, v[1]/l, v[2]/l]; }
+
+const tv = verts.map(() => [0, 0, 0]);   // transformed verts, reused each frame
+const pv = verts.map(() => [0, 0]);      // projected verts
+const order = faces.map((_, i) => i);
+
+function draw(R) {
+  const scale = Math.min(W, H) * 0.30;
+  for (let i = 0; i < verts.length; i++) {
+    const [x, y, z] = verts[i];
+    const t = tv[i];
+    if (fixed[i]) {
+      t[0] = x; t[1] = y; t[2] = z;
+    } else {
+      t[0] = R[0][0]*x + R[0][1]*y + R[0][2]*z;
+      t[1] = R[1][0]*x + R[1][1]*y + R[1][2]*z;
+      t[2] = R[2][0]*x + R[2][1]*y + R[2][2]*z;
+    }
+    const p = CAM / (CAM - t[2]);
+    pv[i][0] = W/2 + t[0] * p * scale;
+    pv[i][1] = H/2 - (t[1] - 0.35) * p * scale;
+  }
+
+  ctx.clearRect(0, 0, W, H);
+  const depth = faces.map(f => (tv[f[0]][2] + tv[f[1]][2] + tv[f[2]][2]) / 3 + f[4]);
+  order.sort((a, b) => depth[a] - depth[b]);   // painter's algorithm
+
+  for (const fi of order) {
+    const [ia, ib, ic, color] = faces[fi];
+    const a = tv[ia], b = tv[ib], c = tv[ic];
+    const ux = b[0]-a[0], uy = b[1]-a[1], uz = b[2]-a[2];
+    const vx = c[0]-a[0], vy = c[1]-a[1], vz = c[2]-a[2];
+    let nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    nx /= l; ny /= l; nz /= l;
+    if (nz <= 0) continue;                     // backface
+    const lam = Math.max(0, nx*LIGHT[0] + ny*LIGHT[1] + nz*LIGHT[2]);
+    const k = 0.46 + 0.58 * lam;
+    ctx.fillStyle = `rgb(${color[0]*k|0},${color[1]*k|0},${color[2]*k|0})`;
+    ctx.beginPath();
+    ctx.moveTo(pv[ia][0], pv[ia][1]);
+    ctx.lineTo(pv[ib][0], pv[ib][1]);
+    ctx.lineTo(pv[ic][0], pv[ic][1]);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = ctx.fillStyle; ctx.lineWidth = 0.7; ctx.stroke();  // seam hiding
+  }
+}
+
+// ---------------------------------------------------------------- data feed
+const D = Math.PI / 180;
+let target = { yaw: 0, pitch: 0, roll: 0 };
+let shown = { yaw: 0, pitch: 0, roll: 0 };
+let zero = { yaw: 0, pitch: 0, roll: 0 };
+let latest = null, samples = 0, lastAt = 0, hz = 0;
+
+const status = document.getElementById("status"), hud = document.getElementById("hud");
+const inv = { yaw: document.getElementById("iyaw"),
+              pitch: document.getElementById("ipitch"),
+              roll: document.getElementById("iroll") };
+
+function recenter() { if (latest) zero = { yaw: latest.yaw, pitch: latest.pitch, roll: latest.roll }; }
+document.getElementById("recenter").onclick = recenter;
+addEventListener("keydown", e => { if (e.key === "r") recenter(); });
+
+const es = new EventSource("/stream");
+es.onmessage = e => {
+  const s = JSON.parse(e.data);
+  if (s.waiting) {
+    status.className = "";
+    status.textContent = "connected to tracker - waiting for AirPods motion data";
+    return;
+  }
+  latest = s;
+  const now = performance.now();
+  if (lastAt) hz = hz * 0.9 + (1000 / (now - lastAt)) * 0.1;
+  lastAt = now; samples++;
+  target = {
+    yaw:   (s.yaw   - zero.yaw)   * (inv.yaw.checked   ? -1 : 1),
+    pitch: (s.pitch - zero.pitch) * (inv.pitch.checked ? -1 : 1),
+    roll:  (s.roll  - zero.roll)  * (inv.roll.checked  ? -1 : 1),
+  };
+  status.className = "live";
+  status.textContent = `live - ${s.sensor} - ${hz.toFixed(0)} Hz - ${samples} samples`;
+};
+es.onerror = () => { status.className = ""; status.textContent = "tracker disconnected"; };
+
+function frame() {
+  for (const k of ["yaw", "pitch", "roll"])       // smooth 25Hz data to 60fps
+    shown[k] += (target[k] - shown[k]) * 0.35;
+  draw(matrix(shown.yaw * D, shown.pitch * D, shown.roll * D));
+  if (latest)
+    hud.textContent =
+      `yaw   ${fmt(target.yaw)}\npitch ${fmt(target.pitch)}\nroll  ${fmt(target.roll)}\n` +
+      `\nquat  w ${latest.quat.w.toFixed(3)}  x ${latest.quat.x.toFixed(3)}` +
+      `  y ${latest.quat.y.toFixed(3)}  z ${latest.quat.z.toFixed(3)}`;
+  requestAnimationFrame(frame);
+}
+const fmt = v => (v >= 0 ? " " : "") + v.toFixed(1).padStart(5) + " deg";
+
+resize();
+frame();
+</script>
