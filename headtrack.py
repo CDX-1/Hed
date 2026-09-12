@@ -10,6 +10,7 @@ CMHeadphoneMotionManager, macOS 14+, via PyObjC.
     ./run.sh --3d            # 3D head in the browser
     ./run.sh --json          # one JSON object per sample on stdout
     ./run.sh --csv run.csv   # record to CSV (also shows dashboard)
+    ./run.sh --mouse         # steer the cursor, and tilt to click
     ./run.sh --airpods       # the old CoreMotion source
 """
 
@@ -35,6 +36,7 @@ for _sp in glob.glob(os.path.join(_HERE, ".venv/lib/python3.*/site-packages")):
         sys.path.insert(0, _sp)
 sys.path.insert(0, _HERE)
 
+import mouse
 import mpu
 
 AUTH = {0: "not determined", 1: "restricted", 2: "denied", 3: "authorized"}
@@ -144,13 +146,28 @@ def bar(value, span, width=41):
     return "".join(track)
 
 
+def arrows(direction):
+    """Which way the cursor is being pushed, as a one-liner."""
+    x, y = direction
+    names = []
+    if x < 0:
+        names.append("left")
+    elif x > 0:
+        names.append("right")
+    if y < 0:
+        names.append("up")
+    elif y > 0:
+        names.append("down")
+    return " + ".join(names) if names else "centred"
+
+
 class Dashboard:
     """In-place terminal readout."""
 
-    LINES = 14
-
-    def __init__(self, note=""):
+    def __init__(self, note="", cursor=None):
         self.note = note
+        self.cursor = cursor
+        self.lines = 15 if cursor else 14
         self.started = False
         self.count = 0
         self.t0 = time.monotonic()
@@ -183,8 +200,11 @@ class Dashboard:
             "  " + self.note,
             "  ctrl-c to stop",
         ]
+        if self.cursor:
+            out.insert(5, f"  mouse   {arrows(self.cursor.direction):<16}"
+                          f"  tilt: {self.cursor.click_state}")
         if self.started:
-            sys.stdout.write(f"\033[{self.LINES}A")
+            sys.stdout.write(f"\033[{self.lines}A")
         self.started = True
         sys.stdout.write("".join(f"\033[2K{line}\n" for line in out))
         sys.stdout.flush()
@@ -352,6 +372,24 @@ def main():
                     help="stop automatically after SEC seconds")
     ap.add_argument("--no-open", action="store_true",
                     help="with --3d, do not launch a browser")
+    ap.add_argument("--mouse", action="store_true",
+                    help="move the mouse cursor with your head (macOS)")
+    ap.add_argument("--mouse-speed", type=float, default=350.0, metavar="PXS",
+                    help="cursor speed in pixels per second (default 350)")
+    ap.add_argument("--mouse-deadzone", type=float, default=6.0, metavar="DEG",
+                    help="degrees off centre before the cursor starts moving "
+                         "(default 6)")
+    ap.add_argument("--mouse-invert-y", action="store_true",
+                    help="look up to move the cursor down")
+    ap.add_argument("--mouse-recenter", type=float, default=2.0, metavar="SEC",
+                    help="how fast centre follows your resting head, to soak up "
+                         "yaw drift; 0 pins it (default 2)")
+    ap.add_argument("--mouse-click-angle", type=float, default=20.0, metavar="DEG",
+                    help="head tilt that fires a click - right shoulder left-clicks, "
+                         "left shoulder right-clicks; 0 turns clicking off "
+                         "(default 20)")
+    ap.add_argument("--mouse-swap-clicks", action="store_true",
+                    help="tilt left to left-click and right to right-click instead")
     ap.add_argument("--airpods", action="store_true",
                     help="use AirPods head tracking (CoreMotion) instead of the MPU")
     ap.add_argument("--demo", action="store_true",
@@ -376,9 +414,37 @@ def main():
         writer = csv.writer(csv_file)
         writer.writerow(CSV_HEADER)
 
-    note = ("angles are relative to where your head pointed at startup" if args.airpods
-            else "yaw drifts (no compass) - restart, or press r in --3d, to re-zero")
-    dash = None if args.json else Dashboard(note)
+    cursor = None
+    if args.mouse:
+        try:
+            cursor = mouse.Cursor(speed=args.mouse_speed,
+                                  deadzone=args.mouse_deadzone,
+                                  invert_y=args.mouse_invert_y,
+                                  recenter=args.mouse_recenter,
+                                  click_angle=args.mouse_click_angle,
+                                  swap_clicks=args.mouse_swap_clicks)
+        except mouse.MouseError as e:
+            sys.exit(f"  {e}")
+        if not cursor.trusted():
+            print("  ! this terminal is not allowed to move the cursor.\n"
+                  "    System Settings > Privacy & Security > Accessibility,\n"
+                  "    tick your terminal app, then start the tracker again.")
+        cursor.start()
+        if not args.json:
+            print(f"  mouse control on - {args.mouse_speed:.0f} px/s past "
+                  f"{args.mouse_deadzone:.0f} deg off centre")
+            if args.mouse_click_angle > 0:
+                lo, hi = cursor.buttons
+                print(f"  tilt {args.mouse_click_angle:.0f} deg to click - "
+                      f"right shoulder {lo}-clicks, left shoulder {hi}-clicks")
+
+    if args.airpods:
+        note = "angles are relative to where your head pointed at startup"
+    elif cursor and args.mouse_recenter > 0:
+        note = "yaw still creeps (no compass) - centre follows your resting head"
+    else:
+        note = "yaw drifts (no compass) - restart, or press r in --3d, to re-zero"
+    dash = None if args.json else Dashboard(note, cursor)
     state = {"fatal": None, "rows": 0}
     latest = {"sample": None, "n": 0}
 
@@ -392,6 +458,8 @@ def main():
             webbrowser.open(url)
 
     def emit(s):
+        if cursor:
+            cursor.aim(s.yaw, s.pitch, s.roll)
         if args.serve:
             latest["sample"] = s
             latest["n"] += 1
@@ -450,6 +518,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        if cursor:
+            cursor.stop()
         if csv_file:
             csv_file.close()
             print(f"\n  wrote {args.csv}")

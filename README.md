@@ -12,6 +12,7 @@ terminal or as a 3D head in the browser.
 ./run.sh --csv run.csv    # record every sample to CSV
 ./run.sh --duration 30    # stop after 30 seconds
 ./run.sh --3d --demo      # fake motion, to check the setup without a sensor
+./run.sh --mouse          # steer the mouse cursor with your head
 ./run.sh --airpods        # the AirPods/CoreMotion source this started as
 ```
 
@@ -96,17 +97,122 @@ the right angles move but in the wrong direction, either flip the sign in
 Pitch and roll are held steady by gravity: the filter always knows which way is
 down, so a tilt error corrects itself within a second or so.
 
-Yaw has no such reference - the MPU-6050 has no magnetometer - so it is pure
-gyro integration and creeps, typically a few degrees a minute after
-calibration. Warm the board up for a minute before calibrating if you care;
-otherwise re-centre (`r` in the 3D view) or restart. Adding a magnetometer
-(HMC5883L, QMC5883L) on the same I2C bus is the real fix, and the filter has
-the shape for it - it would take a second correction term against magnetic
-north.
+Yaw has no such reference - the MPU-6050 has no magnetometer - so it is gyro
+integration and nothing else. Two separate things are done about that.
+
+**The filter.** Orientation comes from [x-io Technologies'
+Fusion](https://github.com/xioTechnologies/Fusion) (`pip install imufusion`),
+by the author of the Madgwick filter. Beyond better accelerometer rejection, it
+runs a zero-rate-update bias tracker: any stretch where the gyro reads under
+3 deg/s for 3 seconds is taken as "at rest", and at rest the gyro reading *is*
+the bias, so it ramps its offset estimate onto it. This matters because the
+startup calibration is a single snapshot and gyro bias moves as the board warms
+- and on a 6-axis part that stale offset integrates straight into heading with
+nothing to check it. It corrects *rate*, not angle, so holding your head at an
+angle is never mistaken for bias: a held pose has no rotation rate.
+
+Simulating a stationary sensor whose bias creeps in to 0.8 deg/s over three
+minutes:
+
+| | yaw error after 3 min |
+|---|---|
+| built-in Mahony | 72 deg |
+| imufusion + bias tracking | 6 deg |
+
+If `imufusion` is missing the tracker falls back to the old Mahony filter and
+says so at startup.
+
+**The application.** `--mouse` does not trust the centre to stay put either; it
+lets the origin follow your resting head, so leftover creep never becomes a
+cursor that slides on its own. See below.
+
+Neither is a compass, and nothing here can be. If you want yaw that genuinely
+does not drift, add a magnetometer (HMC5883L, QMC5883L) on the same I2C bus:
+Fusion's full `update()` already takes one, so it is a firmware change plus a
+few lines here, not a rewrite.
 
 The AirPods source has exactly the same yaw gap, for a different reason:
 CoreMotion's reference-frame entry point that would fix it is private, and
 calling it from a client process traps inside CoreMotion.
+
+## Mouse control
+
+```
+./run.sh --mouse
+```
+
+Your head becomes a d-pad for the cursor, and a tilt towards either shoulder
+clicks. Where you were looking when tracking started is the centre; past 6 degrees off it the cursor slides at a steady 350
+px/s and keeps sliding until you look back. Turning further does **not** move it
+faster or further - it is direction only, so a small glance left parks the
+cursor moving left and you steer with how long you hold it, not how far you
+crane your neck.
+
+```
+./run.sh --mouse --mouse-speed 200      # slower
+./run.sh --mouse --mouse-speed 700      # faster
+./run.sh --mouse --mouse-recenter 0     # never move the centre
+./run.sh --mouse --mouse-deadzone 10    # a wider dead centre
+./run.sh --mouse --mouse-invert-y       # look up to go down
+./run.sh --mouse --3d                   # with the 3D head alongside
+```
+
+Left/right comes from yaw, up/down from pitch. The dashboard grows a `mouse`
+line showing which way it is currently pushing, so you can see the deadzone
+edges without watching the cursor.
+
+### Clicking
+
+Tip your head over towards a shoulder and back:
+
+| gesture | button |
+|---|---|
+| tilt towards the **right** shoulder | **left** click |
+| tilt towards the **left** shoulder | **right** click |
+
+Roll is the one axis the cursor does not use, which is what makes it free for
+this. The threshold is 20 degrees - deliberate, but an easy movement - and it is
+edge-triggered: one tilt is one click however long you hold it, and nothing
+fires again until your head comes back within 10 degrees of upright. That gap is
+what stops a head resting near the threshold from machine-gunning clicks as it
+wobbles across it.
+
+The cursor freezes while your head is over, because head tilt bleeds a little
+into yaw and pitch and a click that slides the pointer off its target is a miss.
+
+```
+./run.sh --mouse --mouse-click-angle 30   # need a bigger tilt
+./run.sh --mouse --mouse-click-angle 0    # no clicking, movement only
+./run.sh --mouse --mouse-swap-clicks      # left shoulder left-clicks instead
+```
+
+Unlike yaw, roll is held honest by gravity and does not drift, so its centre
+only follows a change of posture - settle into a habitual lean and that becomes
+upright. It deliberately does *not* follow a held tilt: letting it creep onto
+one would re-arm the click while your head was still over, and fire the
+opposite button on the way back up.
+
+macOS has to be told to allow it: **System Settings > Privacy & Security >
+Accessibility**, tick whichever terminal you launch from. The tracker checks at
+startup and says so if the permission is missing - without it the cursor events
+are dropped silently. The cursor is nudged from its live position each tick, so
+the trackpad still works at the same time and the screen edges clamp normally.
+
+**Drift is handled here, not endured.** A fixed centre plus a heading that
+creeps eventually means "the cursor drifts left on its own", so the centre is
+not fixed: it leaks towards wherever you are actually looking. Quickly (about 2
+seconds) while you are inside the deadzone, where the cursor is parked anyway
+and re-centring is free; slowly (about 30 seconds) while you are outside it,
+purely as a backstop for drift wider than the deadzone. Simulated:
+
+| | cursor movement |
+|---|---|
+| 3 deg/min of drift, 5 minutes | never twitches |
+| a deliberate 20 deg glance, held 2 s | the full 2 s |
+
+The trade is that holding one pose *indefinitely* decays: a 20 deg hold pushes
+for about 36 seconds - some 25,000 px, far wider than any screen - and then
+stops. `--mouse-recenter 0` pins the centre if you would rather it never moved.
 
 ## The cube view
 
@@ -165,7 +271,8 @@ If you ever deny the motion prompt, re-allow it in
 ## Files
 
 - `headtrack.py` - dashboard, CSV/JSON output, 3D server, source selection
-- `mpu.py` - serial reader, gyro calibration, Mahony filter, axis remap
+- `mpu.py` - serial reader, gyro calibration, Fusion/Mahony filters, axis remap
+- `mouse.py` - head-to-cursor movement and tilt-to-click, CoreGraphics over ctypes
 - `firmware/mpu6050_head/` - the Arduino sketch, ~100 lines
 - `cube.html` - the MPU cube view, standalone
 - `viz.html` - the 3D head (geometry, rotation, and renderer, ~200 lines of plain JS)
