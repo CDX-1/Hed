@@ -1,0 +1,4 @@
+.venv/
+HeadTrack.app/
+*.csv
+__pycache__/
