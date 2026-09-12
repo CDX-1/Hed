@@ -268,9 +268,9 @@ def open_topmost_web_app(url):
 
 
 def open_overlay():
-    """Launch the independent, click-through native island on Windows."""
-    if os.name != "nt":
-        raise RuntimeError("--overlay is currently available on Windows only")
+    """Launch the independent, click-through native island (Windows or macOS)."""
+    if os.name != "nt" and sys.platform != "darwin":
+        raise RuntimeError("--overlay needs Windows or macOS; use --3d instead")
     return subprocess.Popen([sys.executable, os.path.join(_HERE, "overlay.py")])
 
 
@@ -470,7 +470,8 @@ def main():
     ap.add_argument("--always-on-top", action="store_true",
                     help="Windows: open the viewer as an always-on-top Edge web app")
     ap.add_argument("--overlay", action="store_true",
-                    help="Windows: show the inert click-through island overlay")
+                    help="show the island overlay (Windows and macOS; on macOS "
+                         "its VOICE button types what you say into any app)")
     ap.add_argument("--airpods", action="store_true",
                     help="use AirPods head tracking (CoreMotion) instead of the MPU")
     ap.add_argument("--demo", action="store_true",
@@ -546,14 +547,17 @@ def main():
     latest = {"sample": None, "n": 0}
     overlay = None
 
+    # The island is also where voice lives, so it stands on its own rather
+    # than riding along with the 3D view.
+    if args.overlay:
+        overlay = open_overlay()
+
     if args.cube and not args.serve:
         args.serve = 8765
     if args.serve:
         serve(args.serve, latest, stop)
         url = f"http://127.0.0.1:{args.serve}/" + ("cube" if args.cube else "")
         print(f"  {'cube' if args.cube else '3D'} view: {url}")
-        if args.overlay:
-            overlay = open_overlay()
         if args.always_on_top:
             open_topmost_web_app(url)
         elif not args.no_open:

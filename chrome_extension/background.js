@@ -1,201 +1,53 @@
+// The extension never listens on its own. Voice is switched on from the Hed
+// island overlay (VOICE), which runs the one on-device recognizer through the
+// hed-speech hub; this worker attaches to that hub through the native
+// messaging helper and turns "hey hed, ..." / "hed, ..." into browser actions.
+// Typing into fields is the overlay's job, in the browser as everywhere else.
+
 import { parseCommand } from "./commands.js";
+import { NativeSpeech } from "./native-speech.js";
 
-const OFFSCREEN_URL = "offscreen.html";
-const OFFSCREEN_REASONS = ["USER_MEDIA"];
-const OFFSCREEN_JUSTIFICATION = "Runs the extension-owned speech recognizer for dictation and the \"hey hed\" wake word.";
+const speech = new NativeSpeech({
+  onCommand: (text) => runVoiceCommand(text),
+  onStatus: (status) => {
+    session.set({ speechStatus: { ...status, at: Date.now() } }).catch(() => {});
+    broadcastStatus(status);
+  },
+});
 
-let dictation = null; // { tabId, frameId, lang, interim }
+const session = chrome.storage.session ?? chrome.storage.local;
 
-async function hasOffscreen() {
-  if (!chrome.runtime.getContexts) return false;
-  const url = chrome.runtime.getURL(OFFSCREEN_URL);
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ["OFFSCREEN_DOCUMENT"],
-    documentUrls: [url],
-  });
-  return contexts.length > 0;
-}
+// Connecting keeps the worker alive for as long as the helper runs, and the
+// helper keeps retrying the hub, so this is the only place that needs to.
+speech.start();
 
-async function ensureOffscreen() {
-  if (await hasOffscreen()) return true;
-  try {
-    await chrome.offscreen.createDocument({
-      url: OFFSCREEN_URL,
-      reasons: OFFSCREEN_REASONS,
-      justification: OFFSCREEN_JUSTIFICATION,
-    });
+chrome.tabs.onActivated.addListener(() => broadcastStatus(speech.status));
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === "speech-status") {
+    sendResponse(speech.status);
+    return;
+  }
+  if (msg?.type === "voice-command") {
+    runVoiceCommand(msg.text).then(sendResponse);
     return true;
-  } catch (e) {
-    if (String(e).includes("Only a single offscreen")) return true;
-    console.warn("[hed-a11y] offscreen create failed:", e);
-    return false;
-  }
-}
-
-async function closeOffscreenIfIdle() {
-  const { wakeEnabled } = await chrome.storage.sync.get({ wakeEnabled: false });
-  if (!wakeEnabled && !dictation && (await hasOffscreen())) {
-    try { await chrome.offscreen.closeDocument(); } catch {}
-  }
-}
-
-async function tellOffscreen(msg) {
-  if (!(await hasOffscreen())) return;
-  try { await chrome.runtime.sendMessage(msg); } catch {}
-}
-
-async function setWakeEnabled(enabled) {
-  await chrome.storage.sync.set({ wakeEnabled: enabled });
-  if (enabled) {
-    const ok = await ensureOffscreen();
-    if (!ok) return;
-    await tellOffscreen({ type: "wake-config", enabled: true });
-  } else {
-    await tellOffscreen({ type: "wake-config", enabled: false });
-    await closeOffscreenIfIdle();
-  }
-}
-
-async function startDictation({ tabId, frameId, lang, interim }) {
-  console.info("[hed-a11y/bg] startDictation tab=", tabId, "frame=", frameId, "lang=", lang);
-  dictation = { tabId, frameId: frameId ?? 0, lang: lang || "en-US", interim: !!interim };
-  const ok = await ensureOffscreen();
-  if (!ok) {
-    console.warn("[hed-a11y/bg] offscreen unavailable");
-    forwardToDictationTab({ type: "dictation-error", error: "offscreen-unavailable" });
-    dictation = null;
-    return;
-  }
-  await tellOffscreen({
-    type: "dictation-config",
-    active: true,
-    lang: dictation.lang,
-    interim: dictation.interim,
-  });
-}
-
-async function stopDictation() {
-  console.info("[hed-a11y/bg] stopDictation");
-  await tellOffscreen({ type: "dictation-config", active: false });
-  if (dictation) {
-    forwardToDictationTab({ type: "dictation-stopped" });
-  }
-  dictation = null;
-  await closeOffscreenIfIdle();
-}
-
-function forwardToDictationTab(msg) {
-  if (!dictation) return;
-  chrome.tabs
-    .sendMessage(dictation.tabId, msg, { frameId: dictation.frameId })
-    .catch(() => {});
-}
-
-chrome.runtime.onStartup.addListener(async () => {
-  const { wakeEnabled } = await chrome.storage.sync.get({ wakeEnabled: false });
-  if (wakeEnabled) {
-    await ensureOffscreen();
-    await tellOffscreen({ type: "wake-config", enabled: true });
   }
 });
 
-chrome.runtime.onInstalled.addListener(async () => {
-  const { wakeEnabled } = await chrome.storage.sync.get({ wakeEnabled: false });
-  if (wakeEnabled) {
-    await ensureOffscreen();
-    await tellOffscreen({ type: "wake-config", enabled: true });
-  }
-});
+async function runVoiceCommand(text) {
+  const cmd = parseCommand(text);
+  const result = cmd
+    ? await execute(cmd).catch((e) => ({ error: String(e) }))
+    : { unrecognized: true };
+  await notify(text, cmd, result);
+  return { cmd, result };
+}
 
-chrome.commands.onCommand.addListener(async (command) => {
-  if (command === "toggle-listen") {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab?.id != null) {
-      chrome.tabs.sendMessage(tab.id, { type: "toggle" }).catch(() => {});
-    }
-    return;
-  }
-  if (command === "toggle-wake") {
-    const { wakeEnabled } = await chrome.storage.sync.get({ wakeEnabled: false });
-    await setWakeEnabled(!wakeEnabled);
-    return;
-  }
-});
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (dictation?.tabId === tabId) {
-    stopDictation();
-  }
-});
-
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  (async () => {
-    if (msg?.type === "set-wake") {
-      await setWakeEnabled(!!msg.enabled);
-      sendResponse({ ok: true });
-      return;
-    }
-    if (msg?.type === "dictation-start") {
-      const tabId = sender.tab?.id;
-      if (tabId == null) { sendResponse({ ok: false, error: "no-tab" }); return; }
-      await startDictation({
-        tabId,
-        frameId: sender.frameId ?? 0,
-        lang: msg.lang,
-        interim: msg.interim,
-      });
-      sendResponse({ ok: true });
-      return;
-    }
-    if (msg?.type === "dictation-stop") {
-      await stopDictation();
-      sendResponse({ ok: true });
-      return;
-    }
-    if (
-      msg?.type === "dictation-interim" ||
-      msg?.type === "dictation-final" ||
-      msg?.type === "dictation-error" ||
-      msg?.type === "dictation-started"
-    ) {
-      forwardToDictationTab(msg);
-      sendResponse({ ok: true });
-      return;
-    }
-    if (msg?.type === "voice-command") {
-      const cmd = parseCommand(msg.text);
-      const result = cmd
-        ? await execute(cmd).catch((e) => ({ error: String(e) }))
-        : { unrecognized: true };
-      await notify(msg.text, cmd, result);
-      sendResponse({ cmd, result });
-      return;
-    }
-    if (msg?.type === "wake-status") {
-      await broadcastWakeStatus(msg);
-      sendResponse({ ok: true });
-      return;
-    }
-    if (msg?.type === "wake-fatal") {
-      // Offscreen hit a permission/hardware error; disable wake and update storage.
-      await chrome.storage.sync.set({ wakeEnabled: false });
-      sendResponse({ ok: true });
-      return;
-    }
-    if (msg?.type === "offscreen-hello") {
-      // Offscreen just loaded and does not read storage itself. Push the
-      // current wake state (dictation state, if active, is pushed by whoever
-      // asked to start it).
-      const { wakeEnabled, wakeLang } = await chrome.storage.sync.get({
-        wakeEnabled: false, wakeLang: "en-US",
-      });
-      await tellOffscreen({ type: "wake-config", enabled: wakeEnabled, lang: wakeLang });
-      sendResponse({ ok: true });
-      return;
-    }
-  })();
-  return true;
-});
+async function broadcastStatus(status) {
+  const t = await activeTab();
+  if (!t?.id) return;
+  chrome.tabs.sendMessage(t.id, { type: "speech-status", ...status }).catch(() => {});
+}
 
 async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -331,10 +183,4 @@ async function notify(text, cmd, result) {
   chrome.tabs
     .sendMessage(t.id, { type: "voice-feedback", text, cmd, ok: !result?.error && !result?.unrecognized })
     .catch(() => {});
-}
-
-async function broadcastWakeStatus(msg) {
-  const t = await activeTab();
-  if (!t?.id) return;
-  chrome.tabs.sendMessage(t.id, msg).catch(() => {});
 }

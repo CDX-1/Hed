@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A small, inert Windows overlay for the head-tracker viewer.
+"""The Windows island overlay (see overlay.py, which picks a platform).
 
 The overlay is a native window because a web page cannot be both above other
 desktop applications and click-through outside its visible contents. Its window

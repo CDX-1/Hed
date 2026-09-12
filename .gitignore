@@ -2,3 +2,4 @@
 HeadTrack.app/
 *.csv
 __pycache__/
+speech_mac/build/

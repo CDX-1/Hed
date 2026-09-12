@@ -40,6 +40,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSBackgroundOnly</key>          <true/>
     <key>NSMotionUsageDescription</key>
     <string>HeadTrack reads head orientation from your AirPods so you can see the motion data.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>HeadTrack listens while the island's VOICE is on, to type what you say and run voice commands.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>HeadTrack transcribes your voice on-device while the island's VOICE is on.</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>HeadTrack talks to your AirPods over Bluetooth to read head orientation.</string>
 </dict>

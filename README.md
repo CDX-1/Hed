@@ -42,6 +42,38 @@ Use the island's Stop button or `Ctrl+C` in PowerShell to close it. Without a
 connected ESP32, the tracker needs `--demo`; otherwise it exits after reporting
 that no serial port was found.
 
+## Voice typing from the island (macOS 26+)
+
+On a Mac the island is also Hed's voice. Start it on its own or alongside the
+tracker:
+
+```bash
+.venv/bin/python overlay.py
+./run.sh --overlay            # with the tracker (add --3d etc. as usual)
+```
+
+Hover the island and click **VOICE** (a head-tilt click works too - the island
+never takes keyboard focus). From then on, whatever you say is typed into the
+text field that has focus, in any app: Notes, Slack, Mail, a browser, a
+terminal. The island shows a live waveform and what you are saying; click
+VOICE again, or say *stop listening*, to turn it off. Say *new line* for
+Return.
+
+- Speech runs on-device through Apple's `SpeechAnalyzer` (`speech_mac/`,
+  built automatically the first time).
+- Typing needs **Accessibility** permission for whatever launched the overlay
+  (System Settings > Privacy & Security > Accessibility), the same grant
+  `--mouse` uses. macOS also asks once for the microphone.
+- If focus is on something that is not a text field (a button, a list), the
+  text is held for a few seconds and typed as soon as you click into a field,
+  rather than firing keyboard shortcuts.
+- The island is the only thing that turns the microphone on. The Chrome
+  extension (`chrome_extension/`) listens in on the island's transcript and
+  runs "hed, new tab"-style browser commands, which are never typed out; with
+  VOICE off, nothing anywhere is listening.
+- Problems (mic denied, no Accessibility, engine errors) show on the island in
+  yellow, and everything is logged to `~/Library/Logs/Hed/voice.log`.
+
 ## Flashing the board
 
 Open `firmware/mpu6050_head/mpu6050_head.ino` in the Arduino IDE, pick your

@@ -6,60 +6,32 @@
       body { font: 13px system-ui, -apple-system, sans-serif; margin: 0; padding: 14px; width: 280px; color: #222; }
       h1 { font-size: 14px; margin: 0 0 4px; letter-spacing: 0.2px; }
       h2 { font-size: 12px; margin: 14px 0 4px; color: #666; text-transform: uppercase; letter-spacing: 0.6px; }
-      label { display: flex; align-items: center; justify-content: space-between; margin: 6px 0; }
-      select { font-size: 13px; }
-      button { font: 12px system-ui, -apple-system, sans-serif; padding: 6px 10px; border: 1px solid #ccc; background: #f7f7f7; border-radius: 4px; cursor: pointer; }
-      button:hover { background: #eee; }
-      button.grant { width: 100%; margin-top: 6px; }
-      .hint { color: #666; font-size: 11px; margin-top: 8px; line-height: 1.4; }
-      kbd { font: 11px ui-monospace, Menlo, monospace; background: #eee; border: 1px solid #ccc; border-bottom-width: 2px; border-radius: 3px; padding: 1px 4px; }
-      #micState { display: block; font-size: 11px; color: #666; margin-top: 4px; }
+      .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; background: #bbb; flex: none; }
+      .dot.ok { background: #4caf50; }
+      .dot.warn { background: #ffa726; }
+      .dot.bad { background: #e53935; }
+      .hint { color: #666; font-size: 11px; margin-top: 8px; line-height: 1.45; }
       code { font: 11px ui-monospace, Menlo, monospace; background: #f0f0f0; padding: 1px 3px; border-radius: 3px; }
     </style>
   </head>
   <body>
     <h1>Hed A11y</h1>
 
-    <h2>Dictate into text fields</h2>
-    <label>Enabled <input type="checkbox" id="enabled" /></label>
-    <label>Auto-start on focus <input type="checkbox" id="autoStart" /></label>
-    <label>Show interim text <input type="checkbox" id="interim" /></label>
-    <label>Language
-      <select id="lang">
-        <option value="en-US">English (US)</option>
-        <option value="en-GB">English (UK)</option>
-        <option value="es-ES">Español</option>
-        <option value="fr-FR">Français</option>
-        <option value="de-DE">Deutsch</option>
-        <option value="it-IT">Italiano</option>
-        <option value="pt-BR">Português (BR)</option>
-        <option value="nl-NL">Nederlands</option>
-        <option value="ja-JP">日本語</option>
-        <option value="ko-KR">한국어</option>
-        <option value="zh-CN">中文 (简体)</option>
-      </select>
-    </label>
+    <h2>Voice</h2>
+    <div class="row"><span class="dot" id="helperDot"></span><span id="helper">Checking helper…</span></div>
+    <div class="row"><span class="dot" id="islandDot"></span><span id="island">…</span></div>
+    <div class="hint" id="help"></div>
 
-    <h2>Microphone</h2>
-    <button class="grant" id="grantMic">Grant microphone access</button>
-    <span id="micState">One grant covers dictation and "hey hed" - no per-site prompts.</span>
-    <button class="grant" id="testSpeech" style="margin-top:6px;">Test speech recognition</button>
-    <span id="testResult" style="display:block;font-size:11px;color:#666;margin-top:4px;white-space:pre-wrap;"></span>
-
-    <h2>"Hey hed" voice commands</h2>
-    <label>Wake-word listener <input type="checkbox" id="wakeEnabled" /></label>
-
+    <h2>Commands</h2>
     <div class="hint">
-      Try: <code>hey hed, new tab</code> · <code>hey hed, shift two tabs right</code>
-      · <code>hey hed, reload</code> · <code>hey hed, scroll down</code>
-      · <code>hey hed, close tab</code> · <code>hey hed, search cats</code>
-    </div>
-    <div class="hint">
-      Dictate toggle: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd>
-      · Wake toggle: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd>
-      · <kbd>Esc</kbd> stops dictation.
+      Voice is switched on from the island's <b>VOICE</b> button. While it is on,
+      what you say is typed into the focused field, and these run in the browser:
+      <br><code>hey hed, new tab</code> · <code>hed, go two tabs to the left</code>
+      · <code>hed, refresh the page</code> · <code>hed, scroll all the way down</code>
+      · <code>hey hed, could you close this tab</code> · <code>hed, look up cats</code>
     </div>
 
-    <script src="popup.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>
