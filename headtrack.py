@@ -11,6 +11,7 @@ CMHeadphoneMotionManager, macOS 14+, via PyObjC.
     ./run.sh --json          # one JSON object per sample on stdout
     ./run.sh --csv run.csv   # record to CSV (also shows dashboard)
     ./run.sh --mouse         # steer the cursor, and tilt to click
+    ./run.sh --tongue        # hold W in focused Minecraft when your tongue is out
     ./run.sh --airpods       # the old CoreMotion source
 """
 
@@ -165,10 +166,11 @@ def arrows(direction):
 class Dashboard:
     """In-place terminal readout."""
 
-    def __init__(self, note="", cursor=None):
+    def __init__(self, note="", cursor=None, tongue=None):
         self.note = note
         self.cursor = cursor
-        self.lines = 15 if cursor else 14
+        self.tongue = tongue
+        self.lines = 14 + bool(cursor) + bool(tongue)
         self.started = False
         self.count = 0
         self.t0 = time.monotonic()
@@ -204,6 +206,9 @@ class Dashboard:
         if self.cursor:
             out.insert(5, f"  mouse   {arrows(self.cursor.direction):<16}"
                           f"  tilt: {self.cursor.click_state}")
+        if self.tongue:
+            out.insert(6 if self.cursor else 5,
+                       f"  tongue  {self.tongue.state}")
         if self.started:
             sys.stdout.write(f"\033[{self.lines}A")
         self.started = True
@@ -454,6 +459,14 @@ def main():
                          "(default 20)")
     ap.add_argument("--mouse-swap-clicks", action="store_true",
                     help="tilt left to left-click and right to right-click instead")
+    ap.add_argument("--tongue", action="store_true",
+                    help="hold W while your tongue is out and Minecraft is focused")
+    ap.add_argument("--camera", type=int, default=0, metavar="INDEX",
+                    help="camera index for --tongue (default 0)")
+    ap.add_argument("--tongue-threshold", type=float, default=0.08, metavar="RATIO",
+                    help="pink pixel ratio needed for tongue detection (default 0.08)")
+    ap.add_argument("--tongue-preview", action="store_true",
+                    help="show the camera, face/mouth boxes, score, and tongue state")
     ap.add_argument("--always-on-top", action="store_true",
                     help="Windows: open the viewer as an always-on-top Edge web app")
     ap.add_argument("--overlay", action="store_true",
@@ -507,13 +520,27 @@ def main():
                       f"(hold while tilted) - right shoulder {lo}-clicks, "
                       f"left shoulder {hi}-clicks")
 
+    tongue = None
+    if args.tongue:
+        try:
+            import tongue as tongue_module
+            tongue = tongue_module.TongueDetector(
+                camera=args.camera, threshold=args.tongue_threshold,
+                preview=args.tongue_preview,
+                on_error=lambda message: print(f"  ! tongue camera: {message}"))
+        except ImportError:
+            sys.exit("  --tongue needs opencv-python and numpy; install requirements.txt")
+        except tongue_module.TongueError as e:
+            sys.exit(f"  {e}")
+        tongue.start()
+
     if args.airpods:
         note = "angles are relative to where your head pointed at startup"
     elif cursor and args.mouse_recenter > 0:
         note = "yaw still creeps (no compass) - centre follows your resting head"
     else:
         note = "yaw drifts (no compass) - restart, or press r in --3d, to re-zero"
-    dash = None if args.json else Dashboard(note, cursor)
+    dash = None if args.json else Dashboard(note, cursor, tongue)
     state = {"fatal": None, "rows": 0}
     stop = threading.Event()
     latest = {"sample": None, "n": 0}
@@ -595,6 +622,8 @@ def main():
     finally:
         if cursor:
             cursor.stop()
+        if tongue:
+            tongue.stop()
         if overlay:
             overlay.terminate()
         if csv_file:
