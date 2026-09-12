@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Hed A11y — voice-to-text on focus",
+  "version": "0.3.4",
+  "description": "Dictate into any focused text field, and say \"hey hed\" to run browser commands like \"new tab\" or \"shift two tabs right\". Uses the browser's own Web Speech API.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Hed A11y"
+  },
+  "permissions": ["storage", "tabs", "scripting", "offscreen"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "commands": {
+    "toggle-listen": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+M",
+        "mac": "Command+Shift+M"
+      },
+      "description": "Start or stop dictating into the focused field"
+    },
+    "toggle-wake": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
+      },
+      "description": "Turn the \"hey hed\" wake-word listener on or off"
+    }
+  }
+}

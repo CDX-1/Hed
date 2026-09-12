@@ -162,6 +162,19 @@ CoreMotion silently stops delivering.
 If you ever deny the motion prompt, re-allow it in
 **System Settings > Privacy & Security > Motion & Fitness**.
 
+## The Chrome extension
+
+`chrome_extension/` is a standalone browser accessibility helper. Load it
+unpacked from `chrome://extensions`: focusing any text field pops up a mic
+dot beside it and dictates into the field using `SpeechRecognition`.
+**Ctrl/⌘+Shift+M** toggles listening, **Esc** stops.
+
+It does **not** need the Arduino board, `headtrack.py`, the Python venv, or
+`HeadTrack.app`. It never opens a socket to the tracker and never imports
+anything else in this repo - use it on its own with nothing else running.
+
+See `chrome_extension/README.md` for install and options.
+
 ## Files
 
 - `headtrack.py` - dashboard, CSV/JSON output, 3D server, source selection
@@ -171,3 +184,4 @@ If you ever deny the motion prompt, re-allow it in
 - `viz.html` - the 3D head (geometry, rotation, and renderer, ~200 lines of plain JS)
 - `run.sh` - sets up the venv and launches the tracker
 - `build_app.sh` - builds the `HeadTrack.app` wrapper, only needed for `--airpods`
+- `chrome_extension/` - MV3 extension: voice-to-text on the focused field, hotkey toggle
