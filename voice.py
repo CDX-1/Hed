@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 
-import gamekeys
+import hedstate
 import voicekeys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -66,6 +66,59 @@ PENDING_TTL = 12.0
 
 def _plain(text):
     return re.sub(r"[^\w\s']", "", text).lower().strip()
+
+
+# Contractions the recognizer sometimes emits without an apostrophe. Only the
+# bare forms with no plausible other meaning - "its", "were", "well", "wed",
+# "lets", "id", "ill", "cant", "wont" are all real words and stay untouched.
+_CONTRACTIONS = {
+    "im": "I'm", "ive": "I've",
+    "dont": "don't", "doesnt": "doesn't", "didnt": "didn't",
+    "couldnt": "couldn't", "wouldnt": "wouldn't", "shouldnt": "shouldn't",
+    "isnt": "isn't", "arent": "aren't", "wasnt": "wasn't", "werent": "weren't",
+    "hasnt": "hasn't", "havent": "haven't", "hadnt": "hadn't",
+    "youre": "you're", "youve": "you've", "youll": "you'll", "youd": "you'd",
+    "theyre": "they're", "theyve": "they've", "theyll": "they'll", "theyd": "they'd",
+    "weve": "we've", "shes": "she's", "hes": "he's",
+    "thats": "that's", "whats": "what's", "hows": "how's",
+}
+# The recognizer sometimes drops a space before a comma or period, or leaves
+# no space after one. Neither trip up a reader in isolation, but stacked over
+# a whole paragraph the result reads like machine output.
+_SPACE_BEFORE_PUNCT = re.compile(r"[ \t]+([,.!?;:])")
+_SPACE_AFTER_PUNCT = re.compile(r"([,.!?;:])([A-Za-z])")
+_MULTI_SPACE = re.compile(r"[ \t]{2,}")
+
+
+def _polish(text):
+    """Tidy a transcribed utterance so it reads like written text.
+
+    Only fixes things the recognizer routinely gets wrong: whitespace around
+    punctuation, standalone lowercase "i" and its contractions. It leaves
+    capitalization and sentence structure alone - Apple's on-device model is
+    already reasonable, and this is the wrong place to rewrite what someone
+    said.
+    """
+    text = text.strip()
+    if not text:
+        return text
+    text = _SPACE_BEFORE_PUNCT.sub(r"\1", text)
+    text = _SPACE_AFTER_PUNCT.sub(r"\1 \2", text)
+    text = _MULTI_SPACE.sub(" ", text)
+
+    def fix_word(match):
+        word = match.group(0)
+        lower = word.lower()
+        if lower == "i":
+            return "I"
+        if lower in _CONTRACTIONS:
+            # Preserve original capitalization of the first letter.
+            fixed = _CONTRACTIONS[lower]
+            return fixed if word[0].islower() or fixed[0].isupper() else fixed[0].upper() + fixed[1:]
+        return word
+
+    text = re.sub(r"\b[A-Za-z]+(?:'[A-Za-z]+)?\b", fix_word, text)
+    return text
 
 
 class SpeechLink:
@@ -378,34 +431,21 @@ class VoiceTyping:
             if not _plain(after):
                 self._await_until = at + AWAIT_COMMAND
                 return
-            kp = voicekeys.parse(after)
-            if kp:
-                self._press_key(kp)
-                return
-            mode = voicekeys.parse_mode(after)
-            if mode:
-                self._set_game_mode(mode)
+            self._run_overlay_command(after)
             return
         if bare and not rest:
             self._await_until = at + AWAIT_COMMAND
             return
 
         if bare or at < self._await_until:
-            # Key presses ("hed, enter", "hed, command c") fire straight away
-            # - the extension knows to leave these alone, so nothing else will
-            # claim them.
-            kp = voicekeys.parse(rest_text)
-            if kp:
+            # Overlay commands (keys, shortcuts, mode toggle, sensitivity) fire
+            # straight away - the extension knows to leave these alone, so
+            # nothing else will claim them.
+            if self._run_overlay_command(rest_text):
                 self._await_until = 0
-                self._press_key(kp)
                 return
-            mode = voicekeys.parse_mode(rest_text)
-            if mode:
-                self._await_until = 0
-                self._set_game_mode(mode)
-                return
-            # Probably a command ("hed, new tab" or the words after a lone
-            # "hed"), but "head of sales said…" is dictation. Give whoever
+            # Probably a browser command ("hed, new tab" or the words after a
+            # lone "hed"), but "head of sales said…" is dictation. Give whoever
             # handles commands a moment to claim it.
             def claimed():
                 c = self._last_consumed
@@ -459,17 +499,72 @@ class VoiceTyping:
         self._last_typed_pid = None
         self._last_typed_char = ""
 
+    def _run_overlay_command(self, text):
+        """Try each overlay-owned command in turn. Returns True if one matched.
+
+        Order matters when phrases could overlap: a single-key phrase wins
+        over a shortcut ("hed, c" vs "hed, copy" - the parsers cover disjoint
+        vocabularies, but the check runs cheaply either way).
+        """
+        kp = voicekeys.parse(text)
+        if kp:
+            self._press_key(kp)
+            return True
+        steps = voicekeys.parse_shortcut(text)
+        if steps:
+            self._run_shortcut(text, steps)
+            return True
+        mode = voicekeys.parse_mode(text)
+        if mode:
+            self._set_game_mode(mode)
+            return True
+        sens = voicekeys.parse_sensitivity(text)
+        if sens:
+            self._set_sensitivity(sens)
+            return True
+        return False
+
+    def _run_shortcut(self, name, steps):
+        log("shortcut", name.strip(), steps)
+        for step in steps:
+            try:
+                self.typer.press_key(step.key, step.modifiers, step.times)
+            except Exception as e:
+                log("shortcut step failed:", e)
+                return
+            time.sleep(0.02)          # small gap so apps see distinct events
+        self.typed, self.typed_at = " ".join(s.label for s in steps), time.monotonic()
+        self.interim = ""
+        self._last_typed_pid = None
+        self._last_typed_char = ""
+
     def _set_game_mode(self, mode):
-        """Write the mode file the tracker reads; the tracker turns head aim
-        into held arrow keys while it says "game"."""
+        """Persist the mode; the tracker polls the state file and holds
+        arrow keys while it says "game"."""
         log("game mode", mode)
         try:
-            gamekeys.write_mode(mode)
+            hedstate.save(mode=mode)
         except OSError as e:
-            log("write_mode failed:", e)
+            log("save state failed:", e)
             self._say("Could not switch mode")
             return
         self._say("Game mode on" if mode == "game" else "Casual mode")
+        self.interim = ""
+
+    def _set_sensitivity(self, preset):
+        """Persist a mouse-speed preset; the tracker scales the cursor speed."""
+        scale = {"min": hedstate.MOUSE_SCALE_MIN,
+                 "max": hedstate.MOUSE_SCALE_MAX,
+                 "reset": hedstate.MOUSE_SCALE_DEFAULT}[preset]
+        log("mouse sensitivity", preset, scale)
+        try:
+            hedstate.save(mouse_scale=scale)
+        except OSError as e:
+            log("save state failed:", e)
+            self._say("Could not change sensitivity")
+            return
+        self._say({"min": "Mouse slow", "max": "Mouse fast",
+                   "reset": "Mouse reset"}[preset])
         self.interim = ""
 
     def _type(self, text, focus):
@@ -479,6 +574,10 @@ class VoiceTyping:
             # No caret info: assume we are continuing our own last phrase if it
             # went to the same app.
             before = self._last_typed_char if pid == self._last_typed_pid else ""
+
+        text = _polish(text)
+        if not text:
+            return
 
         if before and not before.isspace() and before not in "([{\"'“‘/":
             text = " " + text

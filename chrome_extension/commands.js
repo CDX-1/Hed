@@ -149,6 +149,60 @@ export function isModePhrase(rest) {
   return MODE_NAMES.has(words.join(" "));
 }
 
+// MARK: shortcut phrases
+
+// OS-level clipboard/window macros. The overlay presses cmd+C / cmd+V /
+// cmd+A+Backspace / etc.; the extension steps aside so "hed, copy" doesn't
+// duplicate the current tab (parseCommand("copy") -> duplicateTab). Mirror
+// voicekeys.py's SHORTCUTS - change one, change both.
+const SHORTCUT_NAMES = new Set([
+  "copy", "cut", "paste", "select all", "delete all", "clear all", "clear",
+  "undo", "redo", "save", "save all", "print", "minimize",
+  "bold", "italic", "italics", "underline",
+]);
+const SHORTCUT_LEADS = new Set(["please", "do"]);
+const SHORTCUT_GLUE = new Set(["a", "an", "the"]);
+
+export function isShortcutPhrase(rest) {
+  if (!rest) return false;
+  let words = rest.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
+  while (words.length && SHORTCUT_LEADS.has(words[0])) {
+    words.shift();
+    while (words.length && SHORTCUT_GLUE.has(words[0])) words.shift();
+  }
+  while (words.length && (words[words.length - 1] === "please" ||
+         words[words.length - 1] === "now")) {
+    words.pop();
+  }
+  return SHORTCUT_NAMES.has(words.join(" "));
+}
+
+// MARK: sensitivity phrases
+
+// Mouse sensitivity presets ("hed, min" / "hed, max" / "hed, reset"). The
+// overlay writes the choice to the state file; the tracker scales the cursor.
+// Mirror voicekeys.py's SENSITIVITY.
+const SENSITIVITY_NAMES = new Set([
+  "min", "minimum", "slow", "slower", "slowest", "precise", "precision",
+  "fine", "tiny", "small", "low",
+  "max", "maximum", "fast", "faster", "fastest", "quick", "quicker",
+  "big", "large", "high",
+  "reset", "default", "normal speed", "medium", "middle", "regular",
+  "reset mouse", "reset sensitivity", "reset speed",
+]);
+const SENS_FILLER = new Set([
+  "set", "make", "mouse", "cursor", "sensitivity", "speed", "the", "a",
+  "to", "at", "go", "please", "now",
+]);
+
+export function isSensitivityPhrase(rest) {
+  if (!rest) return false;
+  const words = rest.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
+  if (SENSITIVITY_NAMES.has(words.join(" "))) return true;
+  const core = words.filter((w) => !SENS_FILLER.has(w));
+  return SENSITIVITY_NAMES.has(core.join(" "));
+}
+
 // MARK: vocabulary
 
 const NUMBER_WORDS = {

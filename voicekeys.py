@@ -1,15 +1,24 @@
-"""Spoken key presses: "hed, enter", "hed, command c", "hed, backspace three times".
+"""Spoken key presses, shortcuts, mode toggles and mouse sensitivity.
 
-Parses the words after the wake word into a key, its modifiers and a repeat
-count. Platform-neutral names only; ostext_mac turns them into key codes.
+Four kinds of thing the words after the wake word can turn into:
 
-The Chrome extension must leave these phrases alone (otherwise "hed, down"
-would press the arrow *and* scroll the page), so isKeyPhrase() in
-chrome_extension/commands.js mirrors KEYS, MODIFIERS and the grammar here.
-Change one, change both.
+  - a keypress    ("hed, enter", "hed, command c", "hed, backspace twice")
+  - a shortcut    ("hed, copy", "hed, delete all") - one or more keypresses
+  - a mode toggle ("hed, game mode", "hed, casual mode")
+  - a sensitivity ("hed, min", "hed, max", "hed, reset")
+
+Each is a small dictionary and a parse function. Platform-neutral names only;
+ostext_mac turns them into key codes.
+
+The Chrome extension must leave all of these alone (otherwise "hed, down"
+would press the arrow *and* scroll the page, "hed, copy" would duplicate a
+tab, and so on). chrome_extension/commands.js has parallel isKeyPhrase(),
+isShortcutPhrase(), isModePhrase() and isSensitivityPhrase() helpers that
+mirror the vocabulary here. Change one, change both.
 """
 
 import re
+import sys
 
 MODIFIERS = {
     "command": "cmd", "cmd": "cmd", "comand": "cmd",
@@ -149,3 +158,108 @@ def parse_mode(text):
     while words and words[-1] in ("please", "now"):
         words = words[:-1]
     return MODES.get(" ".join(words))
+
+
+# The clipboard-and-window shortcuts most editors share, keyed by spoken name.
+# Each value is a list of (key, modifiers) pairs; they run in order.
+# cmd on macOS is ctrl on other platforms (voice is macOS today - PLATFORM_MOD
+# just future-proofs the mapping for when the tracker's platform matters).
+PLATFORM_MOD = "cmd" if sys.platform == "darwin" else "ctrl"
+
+SHORTCUTS = {
+    "copy": [("c", (PLATFORM_MOD,))],
+    "cut": [("x", (PLATFORM_MOD,))],
+    "paste": [("v", (PLATFORM_MOD,))],
+    "select all": [("a", (PLATFORM_MOD,))],
+    "delete all": [("a", (PLATFORM_MOD,)), ("backspace", ())],
+    "clear all": [("a", (PLATFORM_MOD,)), ("backspace", ())],
+    "clear": [("a", (PLATFORM_MOD,)), ("backspace", ())],
+    "undo": [("z", (PLATFORM_MOD,))],
+    "redo": [("z", (PLATFORM_MOD, "shift"))],
+    "save": [("s", (PLATFORM_MOD,))],
+    "save all": [("s", (PLATFORM_MOD, "alt"))],
+    "print": [("p", (PLATFORM_MOD,))],
+    "minimize": [("m", (PLATFORM_MOD,))],
+    "bold": [("b", (PLATFORM_MOD,))],
+    "italic": [("i", (PLATFORM_MOD,))],
+    "italics": [("i", (PLATFORM_MOD,))],
+    "underline": [("u", (PLATFORM_MOD,))],
+}
+_SHORTCUT_LEAD = ("please", "do")
+# Glue words the recognizer inserts after the lead ("do a copy", "do the paste").
+_SHORTCUT_GLUE = ("a", "an", "the")
+# Common recognizer swaps that would otherwise miss.
+_SHORTCUT_ALIAS = {
+    "kopy": "copy", "copie": "copy", "cop": "copy",
+    "paist": "paste", "past": "paste",
+    "cutt": "cut",
+    "sellect": "select",
+    "cleer": "clear", "kleer": "clear",
+    "undue": "undo", "un do": "undo",
+    "re do": "redo",
+    "italicize": "italic",
+}
+
+
+def parse_shortcut(text):
+    """The words after the wake -> [KeyPress, ...], or None if not a shortcut.
+
+    "hed, copy" -> one cmd+C; "hed, delete all" -> cmd+A then Backspace.
+    """
+    words = re.sub(r"[^\w\s]", " ", text.lower()).split()
+    while words and words[0] in _SHORTCUT_LEAD:
+        words = words[1:]
+        while words and words[0] in _SHORTCUT_GLUE:
+            words = words[1:]
+    while words and words[-1] in ("please", "now"):
+        words = words[:-1]
+    # Alias substitution word-by-word: "cop that" -> "copy that", useless;
+    # but "cop" alone -> "copy" is a common mis-hear worth catching.
+    normalized = " ".join(_SHORTCUT_ALIAS.get(w, w) for w in words)
+    steps = SHORTCUTS.get(normalized)
+    if not steps:
+        return None
+    return [KeyPress(key, mods) for key, mods in steps]
+
+
+# Mouse sensitivity presets - three points on a slider, not a step control.
+# "min" makes the head-cursor slow enough to hit tiny buttons; "max" whips it
+# across the screen for jumping between windows; "reset" restores the launch
+# value. The scale is a multiplier on --mouse-speed, so relative to whatever
+# you started the tracker with.
+SENSITIVITY = {
+    "min": "min", "minimum": "min", "slow": "min", "slower": "min",
+    "slowest": "min", "precise": "min", "precision": "min", "fine": "min",
+    "tiny": "min", "small": "min", "low": "min",
+    "max": "max", "maximum": "max", "fast": "max", "faster": "max",
+    "fastest": "max", "quick": "max", "quicker": "max", "big": "max",
+    "large": "max", "high": "max",
+    "reset": "reset", "default": "reset", "normal speed": "reset",
+    "medium": "reset", "middle": "reset", "regular": "reset",
+    "reset mouse": "reset", "reset sensitivity": "reset",
+    "reset speed": "reset",
+}
+# Words that only describe *what* is being set ("mouse", "sensitivity", ...)
+# or are grammatical glue ("the", "to"); they can appear anywhere in the
+# phrase and never carry meaning here.
+_SENS_FILLER = {
+    "set", "make", "mouse", "cursor", "sensitivity", "speed", "the", "a",
+    "to", "at", "go", "please", "now",
+}
+
+
+def parse_sensitivity(text):
+    """The words after the wake -> "min" | "max" | "reset", or None.
+
+    Filler words are stripped from anywhere in the phrase, so "reset the
+    sensitivity" and "make the mouse min" and "min speed" all reduce to a
+    single content word that must be in the SENSITIVITY table.
+    """
+    words = re.sub(r"[^\w\s]", " ", text.lower()).split()
+    # Try the raw phrase first, in case a two-word key ("normal speed") is
+    # the whole thing - filler stripping would collapse it to "normal".
+    hit = SENSITIVITY.get(" ".join(words))
+    if hit:
+        return hit
+    words = [w for w in words if w not in _SENS_FILLER]
+    return SENSITIVITY.get(" ".join(words))

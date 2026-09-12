@@ -1,10 +1,9 @@
 """Game mode: hold arrow keys while your head is turned.
 
-Hed's voice toggle ("hed, game mode" / "hed, casual mode") writes the current
-mode to a small file; this reads it and, while the mode is "game", maps head
-yaw and pitch to held arrow keys - so you can walk a character around by
-looking around. Casual (the default, and whatever is written when the file is
-missing or unreadable) leaves the keyboard alone.
+Hed's voice toggle ("hed, game mode" / "hed, casual mode") flips the shared
+state file (see hedstate.py); this class maps head yaw and pitch to held arrow
+keys while the mode is "game", so you can walk a character around by looking.
+Casual is the default and leaves the keyboard alone.
 
 Same one-fixed-direction rule as the mouse: once yaw crosses the deadzone, the
 corresponding arrow key stays down until the head comes back inside. Looking
@@ -13,32 +12,14 @@ there is no fourth arrow to spend on it.
 
 Cross-platform via ctypes (CoreGraphics on macOS, user32 on Windows), for the
 same reason as mouse.py: the tracker runs on both, and this is a handful of
-symbols that does not justify a heavier dependency. Voice is macOS-only, so on
-Windows the mode file will simply never appear and the class stays quiet.
+symbols that does not justify a heavier dependency.
 """
 
 import ctypes
 import ctypes.util
 import os
-import sys
 import threading
-import time
 from ctypes import wintypes
-
-
-def state_dir():
-    if sys.platform == "darwin":
-        return os.path.expanduser("~/Library/Application Support/Hed")
-    if os.name == "nt":
-        return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Hed")
-    return os.path.expanduser("~/.hed")
-
-
-MODE_PATH = os.path.join(state_dir(), "mode")
-
-# Sensors run at ~100 Hz; re-reading the file this often is smooth enough to
-# feel instant without spending every sample on a stat call.
-_MODE_POLL = 0.2
 
 # macOS virtual key codes for the arrows, plus the function/keypad flags that
 # some apps demand before they take synthetic arrow keys seriously.
@@ -52,41 +33,16 @@ _KEYEVENTF_KEYUP = 0x0002
 _KEYEVENTF_EXTENDEDKEY = 0x0001
 
 
-def write_mode(mode):
-    """Persist a mode choice. Called from the voice process."""
-    mode = "game" if mode == "game" else "casual"
-    os.makedirs(state_dir(), exist_ok=True)
-    with open(MODE_PATH, "w") as f:
-        f.write(mode)
-    return mode
-
-
-def read_mode():
-    try:
-        with open(MODE_PATH) as f:
-            return "game" if f.read().strip().lower() == "game" else "casual"
-    except OSError:
-        return "casual"
-
-
 class GameKeys:
-    """Head yaw/pitch -> held arrow keys, gated by the mode file."""
+    """Head yaw/pitch -> held arrow keys, gated by set_mode()."""
 
-    def __init__(self, deadzone=8.0, mode_path=MODE_PATH):
+    def __init__(self, deadzone=8.0):
         self.deadzone = deadzone
-        self.mode_path = mode_path
         self.mode = "casual"
         self.origin = None       # (yaw, pitch) - retaken each time we enter game mode
         self._held = set()
         self._lock = threading.Lock()
-        self._mode_at = 0.0
-        self._mode_mtime = None
         self._load_driver()
-        # Pick up an already-written mode at startup so a lingering "game" from
-        # a previous session takes effect immediately.
-        self._refresh_mode(time.monotonic(), force=True)
-
-    # -- driver setup ----------------------------------------------------
 
     def _load_driver(self):
         self.windows = os.name == "nt"
@@ -111,34 +67,15 @@ class GameKeys:
         cf.CFRelease.argtypes = [ctypes.c_void_p]
         self.cg, self.cf = cg, cf
 
-    # -- mode file -------------------------------------------------------
+    # -- mode ------------------------------------------------------------
 
-    def _refresh_mode(self, now, force=False):
-        if not force and now - self._mode_at < _MODE_POLL:
-            return
-        self._mode_at = now
-        try:
-            st = os.stat(self.mode_path)
-        except OSError:
-            self._mode_mtime = None
-            self._apply_mode("casual")
-            return
-        if not force and st.st_mtime == self._mode_mtime:
-            return
-        self._mode_mtime = st.st_mtime
-        try:
-            with open(self.mode_path) as f:
-                value = f.read().strip().lower()
-        except OSError:
-            value = ""
-        self._apply_mode("game" if value == "game" else "casual")
-
-    def _apply_mode(self, mode):
+    def set_mode(self, mode):
+        mode = "game" if mode == "game" else "casual"
         if mode == self.mode:
             return
         self.mode = mode
-        # Every mode change starts from where the head currently sits, so the
-        # arrows do not fire on whatever drift accumulated while we were off.
+        # Fresh origin each time we enter game mode, so arrows don't fire on
+        # whatever drift piled up while we were off.
         self.origin = None
         self._release_all()
 
@@ -146,8 +83,6 @@ class GameKeys:
 
     def aim(self, yaw, pitch, roll=None):
         """One sample from the tracker. No-op unless game mode is on."""
-        now = time.monotonic()
-        self._refresh_mode(now)
         if self.mode != "game":
             return
         if self.origin is None:

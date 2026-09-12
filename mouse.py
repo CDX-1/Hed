@@ -120,6 +120,15 @@ class Cursor:
     # while the cursor is moving. Deliberate glances last a second or two, so
     # at this rate steering barely notices; drift, which takes minutes, does.
     RECENTER_MOVING = 30.0
+    # If the head has been holding still off-centre for this long, treat that
+    # spot as the new centre. Deliberate glances are usually well under two
+    # seconds - a longer pause with a "moving" cursor is almost always the
+    # sensor's zero having crept, not the user still meaning to look off.
+    RECALIBRATE_STILL = 2.0
+    # How still counts as still, in degrees of yaw+pitch change between
+    # samples. Loose enough to survive breathing and micro-tremor, tight
+    # enough to rule out a deliberate look.
+    STILL_THRESHOLD = 0.5
 
     def __init__(self, speed=350.0, deadzone=6.0, invert_y=False, recenter=2.0,
                  click_angle=20.0, swap_clicks=False):
@@ -139,10 +148,16 @@ class Cursor:
         # one you do a hundred times an hour, so they are paired up.
         self.buttons = ("right", "left") if swap_clicks else ("left", "right")
         self.origin = None          # (yaw, pitch, roll) angles are measured from
+        self.base_speed = speed     # what set_scale multiplies
         self._dir = (0.0, 0.0)      # -1, 0 or +1 per axis
         self._armed = True          # press only on the way past the threshold
         self._held = None           # button name while the head is still over
         self._last_aim = None
+        # For auto-recalibration: how long the head has been holding still
+        # while the cursor is pushed away from centre. When this crosses
+        # RECALIBRATE_STILL we snap the origin here.
+        self._still_since = None
+        self._last_head = None
         # ("down"|"up", button) - posted on the mover thread, not from aim()
         self._button_events = collections.deque()
         self._lock = threading.Lock()
@@ -180,6 +195,31 @@ class Cursor:
             # Head tilt bleeds a little into yaw and pitch, and a click that
             # slides the pointer off its target is a miss. Hold still instead.
             x = y = 0.0
+
+        # Auto-recalibrate: if the head is off centre but not actually
+        # moving, the sensor's zero has crept - not the user deliberately
+        # looking somewhere. The slow leak alone can take half a minute to
+        # eat the drift, during which the cursor walks off on its own. So
+        # after RECALIBRATE_STILL of held-still-off-centre, snap the origin
+        # here and let the cursor come to rest.
+        if not tilted and (x != 0 or y != 0):
+            if self._last_head is not None:
+                head_move = abs(_wrap(yaw - self._last_head[0])) + abs(pitch - self._last_head[1])
+            else:
+                head_move = 0.0
+            if head_move < self.STILL_THRESHOLD:
+                if self._still_since is None:
+                    self._still_since = now
+                elif now - self._still_since >= self.RECALIBRATE_STILL:
+                    self.origin = (yaw, pitch, self.origin[2])
+                    dy_ang = dp_ang = 0.0
+                    x = y = 0.0
+                    self._still_since = None
+            else:
+                self._still_since = None
+        else:
+            self._still_since = None
+        self._last_head = (yaw, pitch)
 
         # Per axis, because one of them is often parked while the other steers.
         # Roll is the exception: gravity keeps it honest, so it has no drift to
@@ -240,6 +280,12 @@ class Cursor:
     def zero(self):
         """Forget the origin; the next sample becomes the new centre."""
         self.origin = None
+        self._still_since = None
+        self._last_head = None
+
+    def set_scale(self, scale):
+        """Scale the cursor speed relative to whatever it launched with."""
+        self.speed = self.base_speed * float(scale)
 
     @property
     def direction(self):

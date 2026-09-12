@@ -39,6 +39,7 @@ for _sp in glob.glob(os.path.join(_HERE, ".venv/lib/python3.*/site-packages")):
 sys.path.insert(0, _HERE)
 
 import gamekeys
+import hedstate
 import mouse
 import mpu
 
@@ -542,10 +543,17 @@ def main():
         note = "yaw still creeps (no compass) - centre follows your resting head"
     else:
         note = "yaw drifts (no compass) - restart, or press r in --3d, to re-zero"
-    # Game mode listens for a small file the voice overlay writes when you say
-    # "hed, game mode"; while it says "game" the tracker holds arrow keys as
-    # you turn your head. Always constructed - it does nothing in casual mode.
+    # State the voice overlay writes ("hed, game mode", "hed, max") and the
+    # tracker reads. The watcher polls the shared state file and pushes
+    # changes into game (arrow-key mode) and cursor (mouse speed scale).
     game = gamekeys.GameKeys()
+
+    def apply_state(s):
+        game.set_mode(s.get("mode", "casual"))
+        if cursor is not None:
+            cursor.set_scale(hedstate.clamp_mouse_scale(s.get("mouse_scale", 1.0)))
+
+    state = hedstate.Watcher(on_change=apply_state)
     dash = None if args.json else Dashboard(note, cursor, tongue)
     state = {"fatal": None, "rows": 0}
     stop = threading.Event()
@@ -569,6 +577,7 @@ def main():
             webbrowser.open(url)
 
     def emit(s):
+        state.refresh()
         if cursor:
             cursor.aim(s.yaw, s.pitch, s.roll)
         game.aim(s.yaw, s.pitch, s.roll)
