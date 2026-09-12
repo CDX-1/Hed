@@ -41,14 +41,12 @@ import objc
 
 AUTH = {0: "not determined", 1: "restricted", 2: "denied", 3: "authorized"}
 
-# Yaw from the public API has no absolute reference, so it is measured from
-# whatever direction you faced at startup and drifts from there. A private
-# entry point accepts a CMAttitudeReferenceFrame; magnetic north pins yaw to a
-# real-world direction and the drift goes away. It is private, so every use is
-# guarded and falls back to the public call.
-NORTH_SEL = ("startDeviceMotionUpdatesPrivateUsingReferenceFrame:"
-             "bodyFrame:toQueue:withHandler:")
-REF_MAGNETIC_NORTH = 4          # CMAttitudeReferenceFrameXMagneticNorthZVertical
+# Yaw has no absolute reference here: it is measured from whatever direction you
+# faced at startup. CoreMotion does carry a private entry point that takes a
+# CMAttitudeReferenceFrame (magnetic north would remove the drift), but calling
+# it from a client process trips a dispatch_assert_queue check inside CoreMotion
+# and traps the process - from the main queue too - so the public API is the
+# only option.
 SENSOR = {0: "default", 1: "left earbud", 2: "right earbud"}
 
 DEG = 180.0 / math.pi
@@ -142,8 +140,6 @@ class Dashboard:
         self.t0 = time.monotonic()
         self.last_draw = 0.0
 
-    north = False
-
     def update(self, s):
         self.count += 1
         now = time.monotonic()
@@ -168,9 +164,7 @@ class Dashboard:
             "  gravity         x {:+.4f}  y {:+.4f}  z {:+.4f}   g".format(*s.grav),
             "",
             "  yaw = turn left/right   pitch = nod   roll = tilt",
-            ("  yaw 0 = magnetic north; pitch and roll are relative to level"
-             if self.north else
-             "  angles are relative to where your head pointed at startup"),
+            "  angles are relative to where your head pointed at startup",
             "  ctrl-c to stop",
         ]
         if self.started:
@@ -236,19 +230,6 @@ def serve(port, latest):
     return srv
 
 
-def start_updates(mgr, queue, handler, north):
-    """Begin motion updates. Returns True if the north-referenced path was taken."""
-    if north and mgr.respondsToSelector_(NORTH_SEL):
-        try:
-            mgr.startDeviceMotionUpdatesPrivateUsingReferenceFrame_bodyFrame_toQueue_withHandler_(
-                REF_MAGNETIC_NORTH, mgr.deviceMotionBodyFrame(), queue, handler)
-            return True
-        except Exception:
-            pass
-    mgr.startDeviceMotionUpdatesToQueue_withHandler_(queue, handler)
-    return False
-
-
 class Delegate(NSObject):
     """Connect/disconnect notices from the headphones."""
 
@@ -279,8 +260,6 @@ def main():
                     help="open a live 3D head in the browser (default port 8765)")
     ap.add_argument("--duration", type=float, metavar="SEC",
                     help="stop automatically after SEC seconds")
-    ap.add_argument("--relative", action="store_true",
-                    help="measure yaw from your startup pose instead of magnetic north")
     ap.add_argument("--no-open", action="store_true",
                     help="with --3d, do not launch a browser")
     ap.add_argument("--demo", action="store_true",
@@ -328,7 +307,7 @@ def main():
         writer.writerow(CSV_HEADER)
 
     dash = None if args.json else Dashboard()
-    state = {"fatal": None, "rows": 0, "n": 0}
+    state = {"fatal": None, "rows": 0}
     latest = {"sample": None, "n": 0}
 
     if args.serve:
@@ -339,7 +318,6 @@ def main():
             webbrowser.open(url)
 
     def emit(s):
-        state["n"] += 1
         if args.serve:
             latest["sample"] = s
             latest["n"] += 1
@@ -369,14 +347,8 @@ def main():
                 time.sleep(0.04)
         threading.Thread(target=fake, daemon=True).start()
     else:
-        north = start_updates(mgr, NSOperationQueue.mainQueue(), handler,
-                              not args.relative)
-        state["north"] = north
-        if dash:
-            dash.north = north
-        if not args.json:
-            print("  yaw reference: "
-                  + ("magnetic north" if north else "your startup pose"))
+        mgr.startDeviceMotionUpdatesToQueue_withHandler_(
+            NSOperationQueue.mainQueue(), handler)
 
     if not args.json:
         print("  waiting for motion data... move your head\n" if not args.demo
@@ -385,19 +357,9 @@ def main():
     signal.signal(signal.SIGINT, signal.default_int_handler)
     loop = NSRunLoop.currentRunLoop()
     deadline = time.monotonic() + args.duration if args.duration else None
-    started = time.monotonic()
     try:
         while state["fatal"] is None:
             loop.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.05))
-            if (state.get("north") and state["n"] == 0
-                    and time.monotonic() - started > 3.0):
-                # accepted the private call but delivered nothing - drop back
-                state["north"] = False
-                mgr.stopDeviceMotionUpdates()
-                start_updates(mgr, NSOperationQueue.mainQueue(), handler, False)
-                if not args.json:
-                    print("  (north reference gave no data - "
-                          "using your startup pose instead)")
             if deadline and time.monotonic() >= deadline:
                 break
     except KeyboardInterrupt:
