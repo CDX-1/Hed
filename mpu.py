@@ -25,6 +25,7 @@ or let --mouse re-zero itself as you rest at centre.
 
 import glob
 import math
+import os
 import time
 from collections import namedtuple
 
@@ -48,6 +49,22 @@ def list_ports():
         for p in sorted(glob.glob(pattern)):
             if p not in seen:
                 seen.append(p)
+    # Windows does not expose serial devices as files, so globbing /dev cannot
+    # discover a plugged-in ESP32 there. pyserial reports COM ports on Windows
+    # (and is also the library used by stream() below).
+    if os.name == "nt":
+        try:
+            from serial.tools import list_ports as serial_ports
+            for port in serial_ports.comports():
+                # Windows often exposes paired Bluetooth devices as COM ports.
+                # They cannot be the USB-connected ESP32 and selecting one
+                # would only make the reader hang waiting for MPU data.
+                if "bluetooth" in port.description.lower():
+                    continue
+                if port.device not in seen:
+                    seen.append(port.device)
+        except ImportError:
+            pass
     return seen
 
 

@@ -3,6 +3,7 @@
 <title>Head tracking</title>
 <style>
   :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
   body {
     margin: 0; height: 100vh; display: flex; flex-direction: column;
     background: #0e1013; color: #d8dde5;
@@ -31,6 +32,61 @@
     background: #1b1f26; border: 1px solid #2c323c; border-radius: 5px; padding: 4px 10px;
   }
   button:hover { background: #242932; }
+
+  /* The controls stay deliberately quiet until the pointer reaches the pill.
+     focus-within keeps it open for keyboard users and while a panel is active. */
+  #island {
+    position: fixed; z-index: 10; top: 12px; left: 50%;
+    width: 68px; height: 24px; transform: translateX(-50%);
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    overflow: hidden; border: 1px solid rgba(255,255,255,.07);
+    border-radius: 999px; background: #000; box-shadow: 0 7px 22px rgba(0,0,0,.36);
+    transition: width .42s cubic-bezier(.2,.9,.2,1), height .42s cubic-bezier(.2,.9,.2,1),
+                border-radius .42s cubic-bezier(.2,.9,.2,1), box-shadow .3s ease;
+  }
+  #island:hover, #island:focus-within, #island.open {
+    width: min(480px, calc(100vw - 24px)); height: 58px; border-radius: 24px;
+    box-shadow: 0 15px 34px rgba(0,0,0,.54);
+  }
+  .island-hint {
+    position: absolute; width: 18px; height: 4px; border-radius: 99px;
+    background: #303038; opacity: .8; transition: opacity .18s ease;
+  }
+  #island:hover .island-hint, #island:focus-within .island-hint, #island.open .island-hint { opacity: 0; }
+  .island-controls {
+    display: flex; align-items: center; gap: 7px; width: 100%; padding: 0 10px;
+    opacity: 0; transform: scale(.86); pointer-events: none;
+    transition: opacity .2s ease .08s, transform .32s cubic-bezier(.2,.9,.2,1) .08s;
+  }
+  #island:hover .island-controls, #island:focus-within .island-controls, #island.open .island-controls {
+    opacity: 1; transform: scale(1); pointer-events: auto;
+  }
+  .island-btn {
+    width: 38px; height: 38px; flex: none; margin: 0; padding: 0; display: grid; place-items: center;
+    color: #f5f5f7; background: #1d1d20; border: 1px solid rgba(255,255,255,.09);
+    border-radius: 50%; transition: transform .18s ease, background .18s ease, color .18s ease;
+  }
+  .island-btn:hover { background: #303035; transform: scale(1.08); }
+  .island-btn:focus-visible { outline: 2px solid #71a7ff; outline-offset: 2px; }
+  .island-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  #voice.active { color: #ff7b8c; background: #3a2028; }
+  #head.active { color: #7ed8ff; background: #1c303b; }
+  #mode { width: auto; min-width: 104px; padding: 0 12px; border-radius: 20px; gap: 7px; display: flex; justify-content: center; font: 600 11px/1 ui-sans-serif, system-ui, sans-serif; }
+  #mode .mode-label { min-width: 42px; text-align: left; }
+  #stop { margin-left: auto; color: #ff8a8a; }
+  #stop:hover { background: #442426; }
+  #tracking-card {
+    position: absolute; top: 52px; left: 47px; width: 190px; padding: 10px 12px;
+    border: 1px solid rgba(255,255,255,.1); border-radius: 13px; background: rgba(25,25,28,.97);
+    color: #bfc3ca; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    opacity: 0; transform: translateY(-8px) scale(.96); pointer-events: none;
+    transition: opacity .18s ease, transform .24s cubic-bezier(.2,.9,.2,1);
+  }
+  #tracking-card.show { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
+  .tracking-title { display: flex; justify-content: space-between; margin-bottom: 6px; color: #f0f2f5; font: 600 10px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: .06em; }
+  .tracking-live { color: #57d6a0; }
+  #tracking-values { white-space: pre; color: #aab3c2; }
+  @media (prefers-reduced-motion: reduce) { #island, .island-controls, #tracking-card, .island-btn { transition: none; } }
 </style>
 
 <header>
@@ -47,6 +103,29 @@
     <button id="recenter">re-center (r)</button>
   </div>
 </div>
+
+<nav id="island" aria-label="Head tracking controls">
+  <span class="island-hint" aria-hidden="true"></span>
+  <div class="island-controls">
+    <button class="island-btn" id="voice" type="button" aria-label="Start voice command" title="Voice commands (coming soon)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8"/></svg>
+    </button>
+    <button class="island-btn" id="head" type="button" aria-label="Show live head tracking" aria-expanded="false" title="Live head tracking">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 21c.8-4 3.2-6 7.5-6s6.7 2 7.5 6"/></svg>
+    </button>
+    <button class="island-btn" id="mode" type="button" aria-label="Switch to mouse mode" title="Switch input mode">
+      <svg class="mode-icon keyboard-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M7 14h6M16 14h1"/></svg>
+      <span class="mode-label">Keyboard</span>
+    </button>
+    <button class="island-btn" id="stop" type="button" aria-label="Stop head tracking" title="Stop head tracking">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor"/></svg>
+    </button>
+  </div>
+  <div id="tracking-card" role="status">
+    <div class="tracking-title"><span>HEAD TRACKING</span><span id="tracking-state" class="tracking-live">LIVE</span></div>
+    <div id="tracking-values">Waiting for sensor…</div>
+  </div>
+</nav>
 
 <script>
 // ---------------------------------------------------------------- geometry
@@ -224,6 +303,14 @@ let zero = { yaw: 0, pitch: 0, roll: 0 };
 let latest = null, samples = 0, lastAt = 0, hz = 0;
 
 const status = document.getElementById("status"), hud = document.getElementById("hud");
+const island = document.getElementById("island");
+const voiceButton = document.getElementById("voice");
+const headButton = document.getElementById("head");
+const trackingCard = document.getElementById("tracking-card");
+const trackingState = document.getElementById("tracking-state");
+const trackingValues = document.getElementById("tracking-values");
+const modeButton = document.getElementById("mode");
+let inputMode = "Keyboard";
 const inv = { yaw: document.getElementById("iyaw"),
               pitch: document.getElementById("ipitch"),
               roll: document.getElementById("iroll") };
@@ -231,6 +318,31 @@ const inv = { yaw: document.getElementById("iyaw"),
 function recenter() { if (latest) zero = { yaw: latest.yaw, pitch: latest.pitch, roll: latest.roll }; }
 document.getElementById("recenter").onclick = recenter;
 addEventListener("keydown", e => { if (e.key === "r") recenter(); });
+
+voiceButton.onclick = () => {
+  // The visual state is ready for the voice layer; actual recognition comes later.
+  const active = voiceButton.classList.toggle("active");
+  voiceButton.setAttribute("aria-label", active ? "Voice command listening" : "Start voice command");
+  voiceButton.title = active ? "Listening for voice commands" : "Voice commands (coming soon)";
+};
+headButton.onclick = () => {
+  const open = trackingCard.classList.toggle("show");
+  headButton.classList.toggle("active", open);
+  headButton.setAttribute("aria-expanded", String(open));
+  island.classList.toggle("open", open);
+};
+modeButton.onclick = () => {
+  inputMode = inputMode === "Keyboard" ? "Mouse" : "Keyboard";
+  modeButton.querySelector(".mode-label").textContent = inputMode;
+  modeButton.setAttribute("aria-label", `Switch to ${inputMode === "Keyboard" ? "mouse" : "keyboard"} mode`);
+  modeButton.title = `Switch to ${inputMode === "Keyboard" ? "mouse" : "keyboard"} mode`;
+};
+document.getElementById("stop").onclick = async () => {
+  if (!confirm("Stop head tracking?")) return;
+  trackingState.textContent = "STOPPING";
+  trackingState.className = "";
+  try { await fetch("/stop", {method: "POST"}); } catch (_) { /* server may close immediately */ }
+};
 
 const es = new EventSource("/stream");
 es.onmessage = e => {
@@ -251,8 +363,14 @@ es.onmessage = e => {
   };
   status.className = "live";
   status.textContent = `live - ${s.sensor} - ${hz.toFixed(0)} Hz - ${samples} samples`;
+  trackingState.textContent = "LIVE";
+  trackingState.className = "tracking-live";
+  trackingValues.textContent = `yaw    ${fmt(target.yaw)}\npitch  ${fmt(target.pitch)}\nroll   ${fmt(target.roll)}\n${hz.toFixed(0)} Hz · ${s.sensor}`;
 };
-es.onerror = () => { status.className = ""; status.textContent = "tracker disconnected"; };
+es.onerror = () => {
+  status.className = ""; status.textContent = "tracker disconnected";
+  trackingState.textContent = "OFFLINE"; trackingState.className = "";
+};
 
 function frame() {
   for (const k of ["yaw", "pitch", "roll"])       // smooth 25Hz data to 60fps

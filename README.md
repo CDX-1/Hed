@@ -18,6 +18,30 @@ terminal or as a 3D head in the browser.
 
 First run creates `.venv` and installs pyserial.
 
+## Windows quick start
+
+`run.sh` is for macOS. From PowerShell, use the Windows virtual environment
+directly. Add `--demo` when an ESP32 is not connected:
+
+```powershell
+.\.venv-windows\Scripts\python.exe .\headtrack.py --3d --demo
+.\.venv-windows\Scripts\python.exe .\headtrack.py --cube --demo
+```
+
+For a standalone Edge web-app window that stays above normal Windows windows,
+add `--always-on-top`. To keep the original local cube page in your ordinary
+browser and show only an inert, click-through island at the top of the desktop,
+use `--overlay` instead:
+
+```powershell
+.\.venv-windows\Scripts\python.exe .\headtrack.py --cube --demo --always-on-top
+.\.venv-windows\Scripts\python.exe .\headtrack.py --cube --overlay
+```
+
+Use the island's Stop button or `Ctrl+C` in PowerShell to close it. Without a
+connected ESP32, the tracker needs `--demo`; otherwise it exits after reporting
+that no serial port was found.
+
 ## Flashing the board
 
 Open `firmware/mpu6050_head/mpu6050_head.ino` in the Arduino IDE, pick your

@@ -21,6 +21,7 @@ import json
 import math
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -214,7 +215,61 @@ PAGES = {"/": "viz.html", "/index.html": "viz.html",
          "/cube": "cube.html", "/cube.html": "cube.html"}
 
 
-def serve(port, latest):
+def open_topmost_web_app(url):
+    """Open the local viewer in Edge app mode and pin its window on Windows."""
+    if os.name != "nt":
+        raise RuntimeError("--always-on-top is currently available on Windows only")
+
+    edge = next((p for p in (
+        os.path.join(os.environ.get("ProgramFiles(x86)", ""),
+                     "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("ProgramFiles", ""),
+                     "Microsoft", "Edge", "Application", "msedge.exe"),
+    ) if os.path.isfile(p)), None)
+    if not edge:
+        raise RuntimeError("Microsoft Edge was not found; install Edge or omit --always-on-top")
+
+    subprocess.Popen([edge, f"--app={url}", "--new-window"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def pin_foreground_edge():
+        # A page cannot elevate itself over other desktop apps. Edge hosts this
+        # same local page; Windows gives its app window the topmost flag.
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        get_class_name = user32.GetClassNameW
+        get_class_name.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        set_window_pos = user32.SetWindowPos
+        set_window_pos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                   wintypes.UINT)
+        set_window_pos.restype = wintypes.BOOL
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            hwnd = user32.GetForegroundWindow()
+            name = ctypes.create_unicode_buffer(256)
+            get_class_name(hwnd, name, len(name))
+            if name.value == "Chrome_WidgetWin_1":
+                # HWND_TOPMOST, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
+                set_window_pos(hwnd, wintypes.HWND(-1), 0, 0, 0, 0,
+                               0x0001 | 0x0002 | 0x0040)
+                return
+            time.sleep(.1)
+
+    threading.Thread(target=pin_foreground_edge, daemon=True).start()
+
+
+def open_overlay():
+    """Launch the independent, click-through native island on Windows."""
+    if os.name != "nt":
+        raise RuntimeError("--overlay is currently available on Windows only")
+    return subprocess.Popen([sys.executable, os.path.join(_HERE, "overlay.py")])
+
+
+def serve(port, latest, stop):
     """Serve the viewer pages and push each sample to them over SSE."""
     pages = {route: open(os.path.join(_HERE, f), "rb").read()
              for route, f in PAGES.items()}
@@ -258,6 +313,14 @@ def serve(port, latest):
             self.end_headers()
             self.wfile.write(body)
 
+        def do_POST(self):
+            if self.path != "/stop":
+                self.send_error(404)
+                return
+            stop.set()
+            self.send_response(204)
+            self.end_headers()
+
     class Server(ThreadingHTTPServer):
         def handle_error(self, request, client_address):
             # A browser closing a tab resets the stream socket; that is normal
@@ -281,7 +344,7 @@ def explain_error(err):
     return f"CoreMotion error {code}: {hint}"
 
 
-def run_airpods(args, emit, state):
+def run_airpods(args, emit, state, stop):
     """The original CoreMotion source. Owns the main thread until it stops."""
     import CoreMotion
     from Foundation import (NSBundle, NSObject, NSOperationQueue, NSProcessInfo,
@@ -340,7 +403,7 @@ def run_airpods(args, emit, state):
     loop = NSRunLoop.currentRunLoop()
     deadline = time.monotonic() + args.duration if args.duration else None
     try:
-        while state["fatal"] is None:
+        while state["fatal"] is None and not stop.is_set():
             loop.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.05))
             if deadline and time.monotonic() >= deadline:
                 break
@@ -390,6 +453,10 @@ def main():
                          "(default 20)")
     ap.add_argument("--mouse-swap-clicks", action="store_true",
                     help="tilt left to left-click and right to right-click instead")
+    ap.add_argument("--always-on-top", action="store_true",
+                    help="Windows: open the viewer as an always-on-top Edge web app")
+    ap.add_argument("--overlay", action="store_true",
+                    help="Windows: show the inert click-through island overlay")
     ap.add_argument("--airpods", action="store_true",
                     help="use AirPods head tracking (CoreMotion) instead of the MPU")
     ap.add_argument("--demo", action="store_true",
@@ -446,15 +513,21 @@ def main():
         note = "yaw drifts (no compass) - restart, or press r in --3d, to re-zero"
     dash = None if args.json else Dashboard(note, cursor)
     state = {"fatal": None, "rows": 0}
+    stop = threading.Event()
     latest = {"sample": None, "n": 0}
+    overlay = None
 
     if args.cube and not args.serve:
         args.serve = 8765
     if args.serve:
-        serve(args.serve, latest)
+        serve(args.serve, latest, stop)
         url = f"http://127.0.0.1:{args.serve}/" + ("cube" if args.cube else "")
         print(f"  {'cube' if args.cube else '3D'} view: {url}")
-        if not args.no_open:
+        if args.overlay:
+            overlay = open_overlay()
+        if args.always_on_top:
+            open_topmost_web_app(url)
+        elif not args.no_open:
             webbrowser.open(url)
 
     def emit(s):
@@ -486,7 +559,7 @@ def main():
 
     def wait():
         deadline = time.monotonic() + args.duration if args.duration else None
-        while state["fatal"] is None:
+        while state["fatal"] is None and not stop.is_set():
             time.sleep(0.05)
             if deadline and time.monotonic() >= deadline:
                 break
@@ -494,11 +567,11 @@ def main():
     signal.signal(signal.SIGINT, signal.default_int_handler)
     try:
         if args.airpods:
-            run_airpods(args, emit, state)
+            run_airpods(args, emit, state, stop)
         elif args.demo:
             def fake():
                 t0 = time.monotonic()
-                while state["fatal"] is None:
+                while state["fatal"] is None and not stop.is_set():
                     emit(Sample.synthetic(time.monotonic() - t0))
                     time.sleep(0.04)
             background(fake)
@@ -510,7 +583,7 @@ def main():
             def read_mpu():
                 for f in mpu.stream(port=args.port, axes=args.axes,
                                     calib_seconds=args.calibrate, status=say):
-                    if state["fatal"] is not None:
+                    if state["fatal"] is not None or stop.is_set():
                         return
                     emit(Sample.from_fused(f))
             background(read_mpu)
@@ -520,6 +593,8 @@ def main():
     finally:
         if cursor:
             cursor.stop()
+        if overlay:
+            overlay.terminate()
         if csv_file:
             csv_file.close()
             print(f"\n  wrote {args.csv}")
