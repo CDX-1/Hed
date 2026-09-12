@@ -56,6 +56,7 @@ _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP = 0x0004
 _MOUSEEVENTF_RIGHTDOWN = 0x0008
 _MOUSEEVENTF_RIGHTUP = 0x0010
+_MOUSEEVENTF_MOVE = 0x0001
 
 # Buttons, as (down event, up event, button number).
 BUTTONS = {
@@ -283,6 +284,13 @@ class Cursor:
         self.cg.CGEventPost(_KCG_HID_EVENT_TAP, ev)
         self.cf.CFRelease(ev)
 
+    def _move_relative(self, x, y):
+        if self.windows:
+            self.user32.mouse_event(_MOUSEEVENTF_MOVE, round(x), round(y), 0, 0)
+            return
+        current_x, current_y = self._location()
+        self._move_to(current_x + x, current_y + y)
+
     def _post_button(self, kind, button):
         """Press or release, where the cursor is now."""
         down, up, number = BUTTONS[button]
@@ -331,16 +339,16 @@ class Cursor:
                 if dx_dir == 0.0 and dy_dir == 0.0:
                     carry_x = carry_y = 0.0
                     continue
-                # Read the live position every tick instead of tracking our own:
-                # the screen edges clamp it for us, and the trackpad still works
-                # while the head is steering.
-                x, y = self._location()
                 carry_x += dx_dir * self.speed * dt
                 carry_y += dy_dir * self.speed * dt
                 step_x, carry_x = _split(carry_x)
                 step_y, carry_y = _split(carry_y)
                 if step_x or step_y:
-                    self._move_to(x + step_x, y + step_y)
+                    if self.windows:
+                        self._move_relative(step_x, step_y)
+                    else:
+                        x, y = self._location()
+                        self._move_to(x + step_x, y + step_y)
         finally:
             # Do not leave a button stuck down if we quit mid-tilt.
             self._flush_buttons()
