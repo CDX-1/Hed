@@ -25,8 +25,9 @@ if [ ! -d .venv ]; then
     "$PY" -m venv .venv
     .venv/bin/pip -q install -r requirements.txt
 fi
-# Keep an existing .venv from an older checkout up to date (pyserial is new).
-.venv/bin/python -c "import serial" 2>/dev/null || \
+# Keep an existing .venv from an older checkout up to date (pyserial, and now
+# imufusion, arrived after some venvs were created).
+.venv/bin/python -c "import serial, imufusion, numpy" 2>/dev/null || \
     .venv/bin/pip -q install -r requirements.txt
 
 AIRPODS=0

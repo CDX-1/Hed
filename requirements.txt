@@ -1,4 +1,9 @@
 pyserial>=3.5
+# x-io Technologies' Fusion filter: adaptive accelerometer rejection and the
+# zero-rate bias tracking that keeps yaw from marching off. Without it mpu.py
+# falls back to its own Mahony filter, which drifts a lot more.
+imufusion>=1.3
+numpy>=1.24
 # only needed for --airpods (the CoreMotion source)
 pyobjc-framework-Cocoa>=10
 pyobjc-framework-CoreMotion>=10
