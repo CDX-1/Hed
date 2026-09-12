@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 
+import gamekeys
 import voicekeys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -380,6 +381,10 @@ class VoiceTyping:
             kp = voicekeys.parse(after)
             if kp:
                 self._press_key(kp)
+                return
+            mode = voicekeys.parse_mode(after)
+            if mode:
+                self._set_game_mode(mode)
             return
         if bare and not rest:
             self._await_until = at + AWAIT_COMMAND
@@ -393,6 +398,11 @@ class VoiceTyping:
             if kp:
                 self._await_until = 0
                 self._press_key(kp)
+                return
+            mode = voicekeys.parse_mode(rest_text)
+            if mode:
+                self._await_until = 0
+                self._set_game_mode(mode)
                 return
             # Probably a command ("hed, new tab" or the words after a lone
             # "hed"), but "head of sales said…" is dictation. Give whoever
@@ -448,6 +458,19 @@ class VoiceTyping:
         # should start clean.
         self._last_typed_pid = None
         self._last_typed_char = ""
+
+    def _set_game_mode(self, mode):
+        """Write the mode file the tracker reads; the tracker turns head aim
+        into held arrow keys while it says "game"."""
+        log("game mode", mode)
+        try:
+            gamekeys.write_mode(mode)
+        except OSError as e:
+            log("write_mode failed:", e)
+            self._say("Could not switch mode")
+            return
+        self._say("Game mode on" if mode == "game" else "Casual mode")
+        self.interim = ""
 
     def _type(self, text, focus):
         before = focus.before if focus is not None else None

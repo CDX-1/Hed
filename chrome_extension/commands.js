@@ -122,6 +122,33 @@ export function isKeyPhrase(rest) {
   return false;
 }
 
+// MARK: mode phrases
+
+// "hed, game mode" / "hed, casual mode" toggle the tracker's arrow-key mode;
+// the overlay handles them. The extension steps aside. Mirror voicekeys.py's
+// MODES/_MODE_LEAD/_MODE_GLUE - change one, change both.
+const MODE_NAMES = new Set([
+  "game mode", "gamer mode", "gaming mode", "gaming", "arrow mode", "arrows",
+  "game", "casual mode", "casual", "normal mode", "regular mode", "chat mode",
+  "chill mode", "normal",
+]);
+const MODE_LEADS = new Set([
+  "switch", "go", "enter", "enable", "turn", "activate", "start",
+]);
+const MODE_GLUE = new Set(["into", "to", "in", "on", "off", "the", "a"]);
+
+export function isModePhrase(rest) {
+  if (!rest) return false;
+  let words = rest.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
+  while (words.length && MODE_LEADS.has(words[0])) words.shift();
+  while (words.length && MODE_GLUE.has(words[0])) words.shift();
+  while (words.length && (words[words.length - 1] === "please" ||
+         words[words.length - 1] === "now")) {
+    words.pop();
+  }
+  return MODE_NAMES.has(words.join(" "));
+}
+
 // MARK: vocabulary
 
 const NUMBER_WORDS = {

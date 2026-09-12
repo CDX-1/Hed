@@ -38,6 +38,7 @@ for _sp in glob.glob(os.path.join(_HERE, ".venv/lib/python3.*/site-packages")):
         sys.path.insert(0, _sp)
 sys.path.insert(0, _HERE)
 
+import gamekeys
 import mouse
 import mpu
 
@@ -541,6 +542,10 @@ def main():
         note = "yaw still creeps (no compass) - centre follows your resting head"
     else:
         note = "yaw drifts (no compass) - restart, or press r in --3d, to re-zero"
+    # Game mode listens for a small file the voice overlay writes when you say
+    # "hed, game mode"; while it says "game" the tracker holds arrow keys as
+    # you turn your head. Always constructed - it does nothing in casual mode.
+    game = gamekeys.GameKeys()
     dash = None if args.json else Dashboard(note, cursor, tongue)
     state = {"fatal": None, "rows": 0}
     stop = threading.Event()
@@ -566,6 +571,7 @@ def main():
     def emit(s):
         if cursor:
             cursor.aim(s.yaw, s.pitch, s.roll)
+        game.aim(s.yaw, s.pitch, s.roll)
         if args.serve:
             latest["sample"] = s
             latest["n"] += 1
@@ -628,6 +634,7 @@ def main():
             cursor.stop()
         if tongue:
             tongue.stop()
+        game.stop()
         if overlay:
             overlay.terminate()
         if csv_file:

@@ -124,3 +124,28 @@ def parse(text):
     if mods and (name in LETTER_NAMES or name in DIGITS):
         return KeyPress(LETTER_NAMES.get(name) or DIGITS[name], mods, times)
     return None
+
+
+# "hed, game mode" flips the tracker into arrow-key mode (see gamekeys.py);
+# "hed, casual mode" flips it back. Casual is the default at startup.
+MODES = {
+    "game mode": "game", "gamer mode": "game", "gaming mode": "game", "gaming": "game",
+    "arrow mode": "game", "arrows": "game", "game": "game",
+    "casual mode": "casual", "casual": "casual", "normal mode": "casual",
+    "regular mode": "casual", "chat mode": "casual", "chill mode": "casual",
+    "normal": "casual",
+}
+_MODE_LEAD = ("switch", "go", "enter", "enable", "turn", "activate", "start")
+_MODE_GLUE = ("into", "to", "in", "on", "off", "the", "a", "into")
+
+
+def parse_mode(text):
+    """The words after the wake -> "game", "casual", or None."""
+    words = re.sub(r"[^\w\s]", " ", text.lower()).split()
+    while words and words[0] in _MODE_LEAD:
+        words = words[1:]
+    while words and words[0] in _MODE_GLUE:
+        words = words[1:]
+    while words and words[-1] in ("please", "now"):
+        words = words[:-1]
+    return MODES.get(" ".join(words))

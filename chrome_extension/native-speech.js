@@ -10,7 +10,7 @@
 // anything that looks like a command and waits for us to claim it, so every
 // command we run is announced to the hub as "consumed".
 
-import { findWake, isKeyPhrase, parseCommand } from "./commands.js";
+import { findWake, isKeyPhrase, isModePhrase, parseCommand } from "./commands.js";
 
 export const HOST = "com.hed.speech";
 
@@ -175,10 +175,10 @@ export class NativeSpeech {
         if (!wake) continue;
         ({ rest, explicit } = wake);
       }
-      // "hed, enter" / "hed, command c" are OS-level keypresses that the
-      // overlay handles. Don't parse or claim them, otherwise "hed, down"
-      // would scroll the page on top of pressing the arrow key.
-      if (rest && isKeyPhrase(rest)) return null;
+      // "hed, enter" / "hed, command c" are OS-level keypresses, and
+      // "hed, game mode" / "hed, casual mode" toggle the tracker's arrow-key
+      // mode - both are the overlay's business. Don't parse or claim them.
+      if (rest && (isKeyPhrase(rest) || isModePhrase(rest))) return null;
       const cmd = rest ? parseCommand(rest) : null;
       if (cmd) return { rest, cmd, explicit };
       // A bare "hed" followed by words that are not a command is just
