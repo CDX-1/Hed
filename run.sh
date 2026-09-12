@@ -1,15 +1,17 @@
 #!/bin/bash
-# Start the AirPods head tracker.
-#   ./run.sh                  live dashboard
+# Start the head tracker.
+#   ./run.sh                  live dashboard (MPU-6050 over USB serial)
+#   ./run.sh --3d             3D head in the browser
 #   ./run.sh --json           one JSON object per sample on stdout
 #   ./run.sh --csv run.csv    record every sample to a CSV
+#   ./run.sh --airpods        the old AirPods/CoreMotion source
 #
-# The tracker has to run from HeadTrack.app: macOS refuses motion data to a
-# process launched straight from a terminal (it blames the terminal, which has
-# no NSMotionUsageDescription, and kills us). Launching the bundle through
-# LaunchServices makes the app itself the one asking, so the permission prompt
-# appears and the data flows. Output is piped back here through a FIFO so the
-# dashboard still shows up in your terminal.
+# The MPU path is an ordinary process reading a serial port, so it just runs.
+# --airpods cannot: macOS refuses motion data to a process launched straight
+# from a terminal (it blames the terminal, which has no NSMotionUsageDescription,
+# and kills us). For that source we launch HeadTrack.app through LaunchServices
+# so the app itself is the one asking, and pipe its output back here through a
+# FIFO so the dashboard still shows up in your terminal.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CALLER="$PWD"
@@ -23,6 +25,20 @@ if [ ! -d .venv ]; then
     "$PY" -m venv .venv
     .venv/bin/pip -q install -r requirements.txt
 fi
+# Keep an existing .venv from an older checkout up to date (pyserial is new).
+.venv/bin/python -c "import serial" 2>/dev/null || \
+    .venv/bin/pip -q install -r requirements.txt
+
+AIRPODS=0
+for arg in "$@"; do
+    [ "$arg" = "--airpods" ] && AIRPODS=1
+done
+
+if [ "$AIRPODS" = 0 ]; then
+    cd "$CALLER"
+    exec "$HERE/.venv/bin/python" "$HERE/headtrack.py" "$@"
+fi
+
 [ -d HeadTrack.app ] || ./build_app.sh
 
 TMP=$(mktemp -d)

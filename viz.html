@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>AirPods head tracking</title>
+<title>Head tracking</title>
 <style>
   :root { color-scheme: dark; }
   body {
@@ -34,7 +34,7 @@
 </style>
 
 <header>
-  <h1>AIRPODS HEAD TRACKING</h1>
+  <h1>HEAD TRACKING</h1>
   <div id="status">connecting...</div>
 </header>
 <div id="stage">
@@ -143,7 +143,7 @@ cone(-1.75, 0.42, -1.9, 0.78, STAND, -0.4);                     // base
 // ---------------------------------------------------------------- rotation
 // Built from yaw/pitch/roll rather than the raw quaternion: the euler angles
 // carry known meaning (turn / nod / tilt), so the model is guaranteed to move
-// the way the head did, whatever basis CoreMotion reports the quaternion in.
+// the way the head did, whatever basis the source reports the quaternion in.
 function matrix(yaw, pitch, roll) {
   const cy = Math.cos(yaw), sy = Math.sin(yaw);
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
@@ -237,7 +237,7 @@ es.onmessage = e => {
   const s = JSON.parse(e.data);
   if (s.waiting) {
     status.className = "";
-    status.textContent = "connected to tracker - waiting for AirPods motion data";
+    status.textContent = "connected to tracker - waiting for motion data";
     return;
   }
   latest = s;

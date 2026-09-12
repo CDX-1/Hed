@@ -1,0 +1,310 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MPU cube</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: #0b0d10; color: #d6dbe4;
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header { padding: 14px 18px 10px; border-bottom: 1px solid #1c2028; }
+  h1 { margin: 0; font-size: 14px; letter-spacing: .06em; font-weight: 600; }
+  #status { color: #6f7889; margin-top: 3px; }
+  #status.live { color: #4ec9a6; }
+  #status.dead { color: #d97070; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #stage { flex: 1; position: relative; min-width: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  aside {
+    width: 268px; flex: none; border-left: 1px solid #1c2028;
+    padding: 14px 16px; overflow-y: auto;
+  }
+  h2 {
+    margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; font-weight: 600;
+    color: #6f7889; text-transform: uppercase;
+  }
+  section { margin-bottom: 18px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 1px 0; }
+  td.k { color: #7e8797; }
+  td.v { text-align: right; color: #e6ebf3; font-variant-numeric: tabular-nums; }
+  .x { color: #ff8080; } .y { color: #7fdd93; } .z { color: #82b9ff; }
+  button {
+    font: inherit; color: #d6dbe4; cursor: pointer; width: 100%;
+    background: #171b22; border: 1px solid #2a313c; border-radius: 6px; padding: 5px 10px;
+  }
+  button:hover { background: #212733; }
+  .hint { color: #5d6675; margin-top: 8px; }
+</style>
+
+<header>
+  <h1>MPU ORIENTATION</h1>
+  <div id="status">connecting...</div>
+</header>
+<main>
+  <div id="stage"><canvas id="c"></canvas></div>
+  <aside>
+    <section>
+      <h2>Angles</h2>
+      <table>
+        <tr><td class="k">yaw</td><td class="v" id="a-yaw">-</td></tr>
+        <tr><td class="k">pitch</td><td class="v" id="a-pitch">-</td></tr>
+        <tr><td class="k">roll</td><td class="v" id="a-roll">-</td></tr>
+      </table>
+    </section>
+    <section>
+      <h2>Quaternion</h2>
+      <table>
+        <tr><td class="k">w</td><td class="v" id="q-w">-</td></tr>
+        <tr><td class="k">x</td><td class="v" id="q-x">-</td></tr>
+        <tr><td class="k">y</td><td class="v" id="q-y">-</td></tr>
+        <tr><td class="k">z</td><td class="v" id="q-z">-</td></tr>
+      </table>
+    </section>
+    <section>
+      <h2>Gyro &middot; deg/s</h2>
+      <table>
+        <tr><td class="k x">X</td><td class="v" id="g-x">-</td></tr>
+        <tr><td class="k y">Y</td><td class="v" id="g-y">-</td></tr>
+        <tr><td class="k z">Z</td><td class="v" id="g-z">-</td></tr>
+      </table>
+    </section>
+    <section>
+      <h2>Accel &middot; g</h2>
+      <table>
+        <tr><td class="k x">X</td><td class="v" id="c-x">-</td></tr>
+        <tr><td class="k y">Y</td><td class="v" id="c-y">-</td></tr>
+        <tr><td class="k z">Z</td><td class="v" id="c-z">-</td></tr>
+      </table>
+    </section>
+    <button id="zero">zero it (r)</button>
+    <div class="hint">Zeroing makes the current attitude the new identity, so the
+    cube snaps back square to the screen.</div>
+  </aside>
+</main>
+
+<script>
+// ------------------------------------------------------------------ frame
+// The tracker reports X forward, Y left, Z up. The screen wants X right, Y up,
+// Z toward the viewer. Those line up as a plain axis permutation:
+//
+//     screen x = sensor y     screen y = sensor z     screen z = sensor x
+//
+// which is a rotation, not a mirror, so the cube you see is the board as it
+// would look facing you - its nose pointing out of the screen, its left on your
+// right.
+const PERM = [1, 2, 0];
+
+function quatToMatrix(q) {
+  const {w, x, y, z} = q;
+  const R = [
+    [1 - 2*(y*y + z*z), 2*(x*y - w*z),     2*(x*z + w*y)],
+    [2*(x*y + w*z),     1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+    [2*(x*z - w*y),     2*(y*z + w*x),     1 - 2*(x*x + y*y)],
+  ];
+  const out = [[0,0,0],[0,0,0],[0,0,0]];        // permute rows and columns
+  for (let i = 0; i < 3; i++)
+    for (let j = 0; j < 3; j++) out[i][j] = R[PERM[i]][PERM[j]];
+  return out;
+}
+
+const qMul = (a, b) => ({
+  w: a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z,
+  x: a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+  y: a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+  z: a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+});
+const qConj = q => ({w: q.w, x: -q.x, y: -q.y, z: -q.z});
+function qNorm(q) {
+  const l = Math.hypot(q.w, q.x, q.y, q.z) || 1;
+  return {w: q.w/l, x: q.x/l, y: q.y/l, z: q.z/l};
+}
+// Straight component-wise lerp, re-normalised - at 100 Hz in and 60 fps out the
+// steps are far too small for the arc-length error in slerp to be visible.
+function qLerp(a, b, t) {
+  const dot = a.w*b.w + a.x*b.x + a.y*b.y + a.z*b.z;
+  const s = dot < 0 ? -1 : 1;                   // take the short way round
+  return qNorm({w: a.w + (s*b.w - a.w)*t, x: a.x + (s*b.x - a.x)*t,
+                y: a.y + (s*b.y - a.y)*t, z: a.z + (s*b.z - a.z)*t});
+}
+
+// ------------------------------------------------------------------ the cube
+// Built in screen axes. Each face is coloured by the sensor axis it faces, so
+// the colour tells you which way the board is pointing even mid-tumble.
+const S = 0.78;
+const V = [
+  [-S,-S,-S], [S,-S,-S], [S,S,-S], [-S,S,-S],   // back  (screen -z)
+  [-S,-S, S], [S,-S, S], [S,S, S], [-S,S, S],   // front (screen +z)
+];
+const FACES = [
+  {v: [4,5,6,7], c: [206, 72, 72]},   // screen +z = sensor +X  forward
+  {v: [1,0,3,2], c: [120, 46, 46]},
+  {v: [5,1,2,6], c: [74, 186, 104]},  // screen +x = sensor +Y  left
+  {v: [0,4,7,3], c: [44, 108, 62]},
+  {v: [7,6,2,3], c: [72, 142, 226]},  // screen +y = sensor +Z  up
+  {v: [0,1,5,4], c: [42, 84, 134]},
+];
+const AXES = [
+  {v: [0, 0, 1.55], t: "X", c: "#ff8080"},      // sensor X, out of the screen
+  {v: [1.55, 0, 0], t: "Y", c: "#7fdd93"},
+  {v: [0, 1.55, 0], t: "Z", c: "#82b9ff"},
+];
+
+const LIGHT = (() => { const v = [-0.4, 0.72, 0.85];
+  const l = Math.hypot(...v); return v.map(n => n / l); })();
+const CAM = 5.2;
+
+// A fixed camera tilt, applied after the sensor's own rotation. Dead-on, a cube
+// facing the screen shows exactly one face - a flat red square that reads as a
+// bug rather than as a cube at rest. Twenty degrees down and twenty-eight
+// across puts front, right and top all in view, which is also all three
+// labelled axes.
+const VIEW = (() => {
+  const rx = 20 * Math.PI / 180, ry = -28 * Math.PI / 180;
+  const cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry);
+  return matMul([[1,0,0],[0,cx,-sx],[0,sx,cx]], [[cy,0,sy],[0,1,0],[-sy,0,cy]]);
+})();
+
+function matMul(A, B) {
+  const out = [[0,0,0],[0,0,0],[0,0,0]];
+  for (let i = 0; i < 3; i++)
+    for (let j = 0; j < 3; j++)
+      out[i][j] = A[i][0]*B[0][j] + A[i][1]*B[1][j] + A[i][2]*B[2][j];
+  return out;
+}
+
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let W = 0, H = 0;
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener("resize", resize);
+
+function draw(R) {
+  const scale = Math.min(W, H) * 0.34;
+  const rot = p => [
+    R[0][0]*p[0] + R[0][1]*p[1] + R[0][2]*p[2],
+    R[1][0]*p[0] + R[1][1]*p[1] + R[1][2]*p[2],
+    R[2][0]*p[0] + R[2][1]*p[1] + R[2][2]*p[2],
+  ];
+  const project = p => {
+    const k = CAM / (CAM - p[2]);
+    return [W/2 + p[0]*k*scale, H/2 - p[1]*k*scale];
+  };
+
+  const tv = V.map(rot);
+  const pv = tv.map(project);
+  ctx.clearRect(0, 0, W, H);
+
+  // Axis rods behind the cube first, the rest after it - enough depth ordering
+  // for three sticks and a solid.
+  const rods = AXES.map(a => ({...a, p: rot(a.v)}));
+  const rod = a => {
+    const [sx, sy] = project([0, 0, 0]), [ex, ey] = project(a.p);
+    ctx.strokeStyle = a.c; ctx.lineWidth = 2.5; ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = a.c; ctx.font = "600 12px ui-monospace, Menlo, monospace";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(a.t, ex, ey);
+  };
+  for (const a of rods) if (a.p[2] < 0) rod(a);
+
+  const order = FACES.map((f, i) => i)
+    .sort((a, b) => mid(FACES[a]) - mid(FACES[b]));
+  function mid(f) { return f.v.reduce((s, i) => s + tv[i][2], 0) / 4; }
+
+  for (const fi of order) {
+    const f = FACES[fi];
+    const [a, b, c] = f.v.map(i => tv[i]);
+    const u = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
+    const w = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
+    let n = [u[1]*w[2] - u[2]*w[1], u[2]*w[0] - u[0]*w[2], u[0]*w[1] - u[1]*w[0]];
+    const l = Math.hypot(...n) || 1;
+    n = n.map(v => v / l);
+    if (n[2] <= 0) continue;                     // facing away
+    const lam = Math.max(0, n[0]*LIGHT[0] + n[1]*LIGHT[1] + n[2]*LIGHT[2]);
+    const k = 0.42 + 0.62 * lam;
+    ctx.beginPath();
+    ctx.moveTo(pv[f.v[0]][0], pv[f.v[0]][1]);
+    for (const i of f.v.slice(1)) ctx.lineTo(pv[i][0], pv[i][1]);
+    ctx.closePath();
+    ctx.fillStyle = `rgb(${f.c[0]*k|0},${f.c[1]*k|0},${f.c[2]*k|0})`;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(10,12,15,.55)"; ctx.lineWidth = 1; ctx.stroke();
+  }
+
+  for (const a of rods) if (a.p[2] >= 0) rod(a);
+}
+
+// ------------------------------------------------------------------ feed
+const el = id => document.getElementById(id);
+const status = el("status");
+const ID = {w: 1, x: 0, y: 0, z: 0};
+
+let target = ID, shown = ID, offset = ID;
+let latest = null, samples = 0, lastAt = 0, hz = 0;
+
+function zero() { if (latest) offset = qConj(qNorm(latest.quat)); }
+el("zero").onclick = zero;
+addEventListener("keydown", e => { if (e.key === "r") zero(); });
+
+const es = new EventSource("/stream");
+es.onmessage = e => {
+  const s = JSON.parse(e.data);
+  if (s.waiting) {
+    status.className = "";
+    status.textContent = "connected to tracker - waiting for the sensor";
+    return;
+  }
+  latest = s;
+  const now = performance.now();
+  if (lastAt) hz = hz * 0.9 + (1000 / (now - lastAt)) * 0.1;
+  lastAt = now; samples++;
+  target = qMul(offset, qNorm(s.quat));
+  status.className = "live";
+  status.textContent = `live - ${s.sensor} - ${hz.toFixed(0)} Hz - ${samples} samples`;
+};
+es.onerror = () => {
+  status.className = "dead";
+  status.textContent = "tracker disconnected";
+};
+
+const f2 = v => (v >= 0 ? "+" : "") + v.toFixed(2);
+const f3 = v => (v >= 0 ? "+" : "") + v.toFixed(3);
+const DEG = 180 / Math.PI;
+
+function frame() {
+  shown = qLerp(shown, target, 0.35);            // 100 Hz in, 60 fps out
+  draw(matMul(VIEW, quatToMatrix(shown)));
+
+  if (latest) {
+    // Read the angles off the same quaternion the cube is using, so the numbers
+    // and the picture can never disagree - including after zeroing.
+    const {w, x, y, z} = shown;
+    el("a-roll").textContent  = f2(Math.atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y)) * DEG) + "°";
+    el("a-pitch").textContent = f2(Math.asin(Math.max(-1, Math.min(1, 2*(w*y - z*x)))) * DEG) + "°";
+    el("a-yaw").textContent   = f2(Math.atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z)) * DEG) + "°";
+    el("q-w").textContent = f3(shown.w);
+    el("q-x").textContent = f3(shown.x);
+    el("q-y").textContent = f3(shown.y);
+    el("q-z").textContent = f3(shown.z);
+    const g = latest.rotation_rate, a = latest.user_accel, gr = latest.gravity;
+    el("g-x").textContent = f2(g.x * DEG);
+    el("g-y").textContent = f2(g.y * DEG);
+    el("g-z").textContent = f2(g.z * DEG);
+    el("c-x").textContent = f2(a.x + gr.x);      // what the accelerometer reads
+    el("c-y").textContent = f2(a.y + gr.y);
+    el("c-z").textContent = f2(a.z + gr.z);
+  }
+  requestAnimationFrame(frame);
+}
+
+resize();
+frame();
+</script>

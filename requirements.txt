@@ -1,2 +1,4 @@
+pyserial>=3.5
+# only needed for --airpods (the CoreMotion source)
 pyobjc-framework-Cocoa>=10
 pyobjc-framework-CoreMotion>=10
