@@ -46,6 +46,82 @@ export function findWake(text) {
 
 const clean = (s) => s.trim().replace(/[\s.,!?;:]+$/, "");
 
+// MARK: key phrases
+
+// "hed, enter" / "hed, command c" press a key at the OS level. The overlay
+// (voicekeys.py) does the pressing; the extension has to recognize the same
+// phrases and step aside, because "hed, down" would otherwise scroll the page
+// on top of pressing the arrow key. Keep the vocabulary in sync with
+// voicekeys.py (KEYS, MODIFIERS, LETTER_NAMES, DIGITS, COUNTS).
+const KEY_MODIFIERS = new Set([
+  "command", "cmd", "comand", "control", "ctrl", "option", "alt", "shift",
+]);
+const KEY_NAMES = new Set([
+  "enter", "return", "tab", "space", "spacebar", "backspace", "delete",
+  "escape", "esc", "up", "down", "left", "right", "home", "end",
+  "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+]);
+// Multi-word names, checked as suffixes after the modifiers are peeled off.
+const KEY_PHRASES = [
+  "space bar", "back space", "forward delete", "up arrow", "arrow up",
+  "down arrow", "arrow down", "left arrow", "arrow left", "right arrow",
+  "arrow right", "page up", "page down",
+];
+const LETTER_KEYS = new Set([
+  "a", "ay", "b", "be", "bee", "c", "see", "sea", "d", "dee", "e", "ee",
+  "f", "ef", "g", "gee", "h", "aitch", "i", "eye", "j", "jay", "k", "kay",
+  "l", "el", "m", "em", "n", "en", "o", "oh", "p", "pee", "q", "queue", "cue",
+  "r", "are", "s", "es", "t", "tee", "tea", "u", "you", "v", "vee", "w",
+  "x", "ex", "y", "why", "z", "zee", "zed",
+]);
+const DIGIT_KEYS = new Set([
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+  "nine", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+]);
+const COUNT_WORDS = new Set([
+  "once", "twice", "thrice", "one", "two", "to", "too", "three", "four",
+  "for", "five", "six", "seven", "eight", "nine", "ten",
+]);
+const KEY_LEADS = new Set(["press", "hit", "tap", "push", "type", "key"]);
+
+/**
+ * True if `rest` (the words after the wake) is a keypress request the overlay
+ * will execute at the OS level. The extension must not run these as browser
+ * commands - "hed, down" is an arrow key, not a page scroll.
+ */
+export function isKeyPhrase(rest) {
+  if (!rest) return false;
+  let words = rest.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean);
+  while (words.length && KEY_LEADS.has(words[0])) words.shift();
+  if (words.length && words[words.length - 1] === "key") words.pop();
+
+  // Trailing repeat count ("three times", "twice", "x2").
+  if (words.length >= 2 && (words[words.length - 1] === "times" || words[words.length - 1] === "time")) {
+    const n = words[words.length - 2];
+    if (!/^\d+$/.test(n) && !COUNT_WORDS.has(n)) return false;
+    words = words.slice(0, -2);
+    if (words.length && words[words.length - 1] === "x") words.pop();
+  } else if (words.length && (words[words.length - 1] === "once" ||
+             words[words.length - 1] === "twice" || words[words.length - 1] === "thrice")) {
+    words = words.slice(0, -1);
+  }
+
+  const mods = [];
+  while (words.length && KEY_MODIFIERS.has(words[0])) {
+    mods.push(words.shift());
+    if (words.length && (words[0] === "plus" || words[0] === "and")) words.shift();
+  }
+  if (words.length && words[words.length - 1] === "key") words.pop();
+  if (!words.length) return false;
+
+  const name = words.join(" ");
+  if (KEY_NAMES.has(name) || KEY_PHRASES.includes(name)) return true;
+  // Letters and digits are only key requests when a modifier makes them one
+  // ("command c"); "hed, a" alone is far more likely a misheard sentence.
+  if (mods.length && (LETTER_KEYS.has(name) || DIGIT_KEYS.has(name))) return true;
+  return false;
+}
+
 // MARK: vocabulary
 
 const NUMBER_WORDS = {

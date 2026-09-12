@@ -27,6 +27,8 @@ import sys
 import threading
 import time
 
+import voicekeys
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 SPEECH_DIR = os.path.join(_HERE, "speech_mac")
 BINARY = os.path.join(SPEECH_DIR, "build", "hed-speech")
@@ -356,7 +358,8 @@ class VoiceTyping:
     def _handle_final(self, text, at):
         plain = _plain(text)
         bare = _BARE_WAKE.match(text)
-        rest = _plain(text[bare.end():]) if bare else plain
+        rest_text = text[bare.end():] if bare else text
+        rest = _plain(rest_text)
         if plain in _STOP_PHRASES or rest in _STOP_PHRASES:
             self.set_active(False)
             self._say("Voice typing off")
@@ -370,14 +373,27 @@ class VoiceTyping:
         if hey:
             # Addressed to Hed outright: a command, never dictation. If nothing
             # runs it, the extension shows its own "didn't understand".
-            if not _plain(text[hey.end():]):
+            after = text[hey.end():]
+            if not _plain(after):
                 self._await_until = at + AWAIT_COMMAND
+                return
+            kp = voicekeys.parse(after)
+            if kp:
+                self._press_key(kp)
             return
         if bare and not rest:
             self._await_until = at + AWAIT_COMMAND
             return
 
         if bare or at < self._await_until:
+            # Key presses ("hed, enter", "hed, command c") fire straight away
+            # - the extension knows to leave these alone, so nothing else will
+            # claim them.
+            kp = voicekeys.parse(rest_text)
+            if kp:
+                self._await_until = 0
+                self._press_key(kp)
+                return
             # Probably a command ("hed, new tab" or the words after a lone
             # "hed"), but "head of sales said…" is dictation. Give whoever
             # handles commands a moment to claim it.
@@ -416,6 +432,22 @@ class VoiceTyping:
             pending, self._pending = self._pending, []
             for text, _ in pending:
                 self._type(text, self.focus)
+
+    def _press_key(self, kp):
+        log("press", kp)
+        try:
+            self.typer.press_key(kp.key, kp.modifiers, kp.times)
+        except Exception as e:
+            log("press_key failed:", e)
+            return
+        self.typed, self.typed_at = kp.label, time.monotonic()
+        # Anything half-heard from this utterance is stale now.
+        self.interim = ""
+        # Reset the caret-continuation guess: a keypress can move focus, split
+        # sentences, or dismiss the field entirely - the next dictated phrase
+        # should start clean.
+        self._last_typed_pid = None
+        self._last_typed_char = ""
 
     def _type(self, text, focus):
         before = focus.before if focus is not None else None

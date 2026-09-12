@@ -120,6 +120,10 @@ class _DryRunTyper:
         from voice import log
         log("dry-run, not pressing return")
 
+    def press_key(self, key, modifiers=(), times=1):
+        from voice import log
+        log("dry-run, not pressing", key, list(modifiers), "x", times)
+
 
 class IslandPanel(NSPanel):
     def canBecomeKeyWindow(self):
